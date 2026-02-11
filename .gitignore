@@ -1,0 +1,12 @@
+# Scan output (generated at runtime)
+**/scan-results/
+**/test-output/
+
+# Backup copies
+*copy*.ps1
+*_bkp.ps1
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
