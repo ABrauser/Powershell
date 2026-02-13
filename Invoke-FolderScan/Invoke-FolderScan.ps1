@@ -1862,7 +1862,8 @@ const table = new DataTable('#file-table', {
     {
       data: 'sizeBytes',
       title: 'Größe',
-      render: function(data) {
+      render: function(data, type) {
+        if (type === 'sort' || type === 'type') return data;
         var cls = 'cell-size';
         if (data >= 524288000) cls += ' size-danger';
         else if (data >= 52428800) cls += ' size-warn';
@@ -1874,7 +1875,7 @@ const table = new DataTable('#file-table', {
     { data: 'sizeMB', title: 'MB', visible: false, render: DataTable.render.number('.', ',', 2, '', ' MB') },
     
     { data: 'created', title: 'Erstellt', visible: false },
-    { data: 'modified', title: 'Geändert', render: function(data) { return '<span style="white-space:nowrap">' + escH(data) + '</span>'; } },
+    { data: 'modified', title: 'Geändert', render: function(data, type) { if (type === 'sort' || type === 'type') return data; return '<span style="white-space:nowrap">' + escH(data) + '</span>'; } },
     
     { 
       data: 'readOnly', title: '🔒', visible: false,
