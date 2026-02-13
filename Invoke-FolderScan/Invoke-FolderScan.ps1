@@ -448,7 +448,7 @@ function Invoke-FolderScan {
     --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     --radius-card: 24px;
     --radius-btn: 20px;
-    --font-head: 'Google Sans', 'Inter', sans-serif;
+    --font-head: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 "@
   }
   else {
@@ -471,7 +471,7 @@ function Invoke-FolderScan {
     --shadow: 0 4px 8px rgba(0,0,0,0.3);
     --radius-card: 24px;
     --radius-btn: 20px;
-    --font-head: 'Google Sans', 'Inter', sans-serif;
+    --font-head: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 "@
   }
 
@@ -524,7 +524,8 @@ function Invoke-FolderScan {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Folder Scan Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" onerror="this.remove()">
 <!-- DataTables CSS -->
 <link rel="stylesheet" href="https://cdn.datatables.net/2.3.7/css/dataTables.dataTables.min.css">
 <link rel="stylesheet" href="https://cdn.datatables.net/buttons/3.2.0/css/buttons.dataTables.min.css">
@@ -534,7 +535,7 @@ $themeCss
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg-primary);
     color: var(--text-primary);
     line-height: 1.6;
@@ -571,7 +572,7 @@ $themeCss
     font-weight: 600;
   }
   .scan-path {
-    font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--text-secondary);
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace; font-size: 0.85rem; color: var(--text-secondary);
     background: var(--bg-secondary); display: inline-block; padding: 0.4rem 1rem;
     border-radius: 99px; margin-top: 0.8rem;
   }
@@ -834,7 +835,12 @@ $themeCss
   .top10-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.5rem; }
   .top10-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.8rem; background: var(--bg-secondary); border-radius: 8px; font-size: 0.8rem; gap: 0.5rem; }
   .top10-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 500; }
-  .top10-size { font-family: 'JetBrains Mono', monospace; color: var(--accent); white-space: nowrap; }
+  .top10-size { font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace; color: var(--accent); white-space: nowrap; }
+
+  /* Fallback: basic table styling when DataTables CDN fails */
+  table.display:not(.dataTable) { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  table.display:not(.dataTable) th, table.display:not(.dataTable) td { padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border-glass); text-align: left; }
+  table.display:not(.dataTable) th { font-weight: 600; color: var(--text-primary); }
   .top10-bar { height: 3px; background: var(--accent); border-radius: 2px; margin-top: 3px; transition: width 0.3s; }
 
   /* Folder search */
@@ -2142,7 +2148,7 @@ jQuery(document).ready(function() {
   # WRITE HTML & OPEN
   # ═══════════════════════════════════════════════════════════════
   $htmlPath = Join-Path $OutputDir "Dashboard.html"
-  [System.IO.File]::WriteAllText($htmlPath, $htmlContent, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText($htmlPath, $htmlContent, [System.Text.UTF8Encoding]::new($true))
   Write-Host "[Invoke-FolderScan] Dashboard: $htmlPath" -ForegroundColor Green
 
   Start-Process $htmlPath
