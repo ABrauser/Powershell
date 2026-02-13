@@ -911,10 +911,39 @@ $themeCss
   $deltaHtml
 
   <!-- Quick Export -->
-  <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-    <button class="qf-btn qf-btn-accent" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📄 CSV exportieren</button>
-    <button class="qf-btn qf-btn-accent" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📊 Excel exportieren</button>
-    <button class="qf-btn" id="btn-pipeline-csv" onclick="exportPipelineCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem" title="Maschinenlesbare CSV ohne Formatierung – optimal für Ducling/Pipeline-Verarbeitung">⚙️ Pipeline CSV</button>
+  <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+    <button class="qf-btn qf-btn-accent" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📄 CSV (Ansicht)</button>
+    <button class="qf-btn qf-btn-accent" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📊 Excel (Ansicht)</button>
+    <span style="border-left:1px solid var(--border-glass);height:1.5rem;margin:0 0.3rem"></span>
+    <button class="qf-btn" id="btn-pipeline-csv" onclick="exportPipelineCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem" title="Rohdaten CSV mit allen Feldern – gefiltert nach aktiver Auswahl">📋 Rohdaten CSV (gefiltert)</button>
+  </div>
+
+  <!-- Copy Command Builder -->
+  <div class="structure-section" id="cmd-builder" style="padding:1rem 1.5rem;margin-bottom:1.5rem">
+    <div class="section-header" style="margin-bottom:0.8rem">
+      <h2 onclick="toggleCmdBuilder()" style="font-size:1rem"><span class="collapse-arrow collapsed" id="cmd-arrow">▼</span> 📋 PowerShell-Befehl: Dateien kopieren</h2>
+    </div>
+    <div id="cmd-body" data-collapsed="1" style="transition: max-height 0.35s ease, opacity 0.25s ease; max-height: 0px; opacity: 0; overflow: hidden;">
+      <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.8rem">
+        Kopiert Dateien aus dem Scan in einen Zielordner (Ordnerstruktur bleibt erhalten).<br>
+        Passe den <strong>Zielordner</strong> an und füge den Befehl in PowerShell ein.
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap">
+        <label style="font-size:0.82rem;font-weight:500;color:var(--text-secondary)">Zielordner:</label>
+        <input type="text" id="cmd-dest" value="C:\Output\ConvertibleFiles" style="flex:1;min-width:200px;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace" oninput="updateCopyCommand()">
+        <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
+          <input type="checkbox" id="cmd-conv" checked onchange="updateCopyCommand()"> Nur Konvertierbare
+        </label>
+        <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
+          <input type="checkbox" id="cmd-whatif" onchange="updateCopyCommand()"> -WhatIf (Testlauf)
+        </label>
+      </div>
+      <div style="position:relative">
+        <pre id="cmd-output" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.8rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.78rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyCmdToClipboard()" title="Klicken zum Kopieren"></pre>
+        <button onclick="copyCmdToClipboard()" style="position:absolute;top:0.4rem;right:0.4rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer">📋 Kopieren</button>
+      </div>
+      <div id="cmd-copied" style="font-size:0.75rem;color:var(--success);margin-top:0.3rem;opacity:0;transition:opacity 0.3s"></div>
+    </div>
   </div>
 
   <!-- Activity Chart -->
@@ -1056,6 +1085,8 @@ const CC = ['#4285F4','#9B72CB','#D96570','#F4B400','#0F9D58','#8AB4F8','#C58AF9
 // === DATA ===
 const SCAN_ROOT = "$($ResolvedPath -replace '\\', '\\\\')";
 const scanRoot = SCAN_ROOT.replace(/\\\\/g, '\\');
+const CSV_PATH = "$($csvPath -replace '\\', '\\\\')";
+const csvPath = CSV_PATH.replace(/\\\\/g, '\\');
 const extData = [$extChartJson];
 const convData = [
   { label: 'Konvertierbar', count: $convertibleCount, percent: Math.round(($convertibleCount / ($totalFiles || 1)) * 1000) / 10 },
@@ -1987,6 +2018,54 @@ function exportPipelineCSV() {
 }
 
 
+
+// === COMMAND BUILDER ===
+function toggleCmdBuilder() {
+  var body = document.getElementById('cmd-body');
+  var arrow = document.getElementById('cmd-arrow');
+  if (!body) return;
+  var collapsed = body.dataset.collapsed === '1';
+  if (collapsed) {
+    body.dataset.collapsed = '0';
+    body.style.maxHeight = '600px';
+    body.style.opacity = '1';
+    arrow.classList.remove('collapsed');
+    updateCopyCommand();
+  } else {
+    body.dataset.collapsed = '1';
+    body.style.maxHeight = '0px';
+    body.style.opacity = '0';
+    arrow.classList.add('collapsed');
+  }
+}
+
+function updateCopyCommand() {
+  var dest = document.getElementById('cmd-dest').value || 'C:\\Output';
+  var onlyConv = document.getElementById('cmd-conv').checked;
+  var whatIf = document.getElementById('cmd-whatif').checked;
+
+  var cmd = '. "' + csvPath.replace(/[^\\]+$/, '') + 'Copy-ScannedFiles.ps1"\n';
+  cmd += 'Copy-ScannedFiles -CsvPath "' + csvPath + '" -Destination "' + dest + '"';
+  if (onlyConv) cmd += ' -OnlyConvertible';
+  if (whatIf) cmd += ' -WhatIf';
+
+  var el = document.getElementById('cmd-output');
+  if (el) el.textContent = cmd;
+}
+
+function copyCmdToClipboard() {
+  var el = document.getElementById('cmd-output');
+  if (!el) return;
+  var text = el.textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var msg = document.getElementById('cmd-copied');
+    if (msg) {
+      msg.textContent = '✅ In Zwischenablage kopiert!';
+      msg.style.opacity = '1';
+      setTimeout(function() { msg.style.opacity = '0'; }, 2000);
+    }
+  });
+}
 
 // === TREEMAP ===
 

@@ -4,6 +4,7 @@
 
 # Backup copies
 *copy*.ps1
+!**/Copy-ScannedFiles.ps1
 *_bkp.ps1
 
 # OS files
