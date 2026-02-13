@@ -542,7 +542,7 @@ $themeCss
     min-height: 100vh;
   }
   .container { max-width: 98%; margin: 0 auto; padding: 1.5rem 2rem; }
-  .path-cell-inner { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; min-width: 100%; direction: rtl; text-align: left; }
+  .path-cell-inner { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; min-width: 100%; }
   /* Active states for filters */
   .qf-btn.active-filter {
     background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important;
@@ -1803,7 +1803,7 @@ const table = new DataTable('#file-table', {
   deferRender: true,
   pageLength: 25,
   lengthMenu: [[15, 25, 50, 100, -1], [15, 25, 50, 100, 'Alle']],
-  order: [[0, 'asc']],
+  order: [[1, 'asc']],
   layout: {
     topStart: 'buttons',
     topEnd: 'search',
@@ -1813,29 +1813,40 @@ const table = new DataTable('#file-table', {
   buttons: [
     'copy',
     { extend: 'colvis', text: 'Spalten' },
-    { extend: 'csvHtml5', title: 'FolderScan', exportOptions: { columns: ':visible:not(:last-child)' } },
-    { extend: 'excelHtml5', title: 'FolderScan', exportOptions: { columns: ':visible:not(:last-child)' } },
-    { extend: 'print', title: 'Folder Scan', exportOptions: { columns: ':visible:not(:last-child)' } }
+    { extend: 'csvHtml5', title: 'FolderScan', exportOptions: { columns: ':visible:not(.no-export)', orthogonal: 'export' } },
+    { extend: 'excelHtml5', title: 'FolderScan', exportOptions: { columns: ':visible:not(.no-export)', orthogonal: 'export' } },
+    { extend: 'print', title: 'Folder Scan', exportOptions: { columns: ':visible:not(.no-export)' } }
   ],
   columns: [
     {
+      data: 'ext',
+      title: '',
+      orderable: false,
+      searchable: false,
+      className: 'no-export',
+      width: '28px',
+      render: function(data) {
+        var icon = '📄';
+        var ext = data ? data.toLowerCase() : '';
+        if (['.jpg','.png','.gif','.svg','.webp','.ico','.bmp','.tiff'].includes(ext)) icon = '🖼️';
+        else if (['.mp4','.mov','.avi','.mkv','.wmv'].includes(ext)) icon = '🎬';
+        else if (['.mp3','.wav','.flac','.ogg','.aac'].includes(ext)) icon = '🎵';
+        else if (['.zip','.rar','.7z','.tar','.gz','.bz2'].includes(ext)) icon = '📦';
+        else if (['.exe','.msi','.bat','.ps1','.sh','.cmd'].includes(ext)) icon = '⚙️';
+        else if (['.pdf'].includes(ext)) icon = '📕';
+        else if (['.docx','.doc','.txt','.md','.rtf','.odt'].includes(ext)) icon = '📝';
+        else if (['.xlsx','.xls','.csv','.ods'].includes(ext)) icon = '📊';
+        else if (['.pptx','.ppt','.odp'].includes(ext)) icon = '📽️';
+        else if (['.html','.css','.js','.json','.xml','.yaml','.yml','.ts','.jsx','.tsx'].includes(ext)) icon = '💻';
+        return '<span style="font-size:1rem">'+icon+'</span>';
+      }
+    },
+    {
       data: 'name',
       title: 'Name',
-      render: function(data, type, row) { 
+      render: function(data, type) { 
         if (type !== 'display') return data;
-        var icon = '📄';
-        var ext = row.ext ? row.ext.toLowerCase() : '';
-        if (['.jpg','.png','.gif','.svg','.webp'].includes(ext)) icon = '🖼️';
-        else if (['.mp4','.mov','.avi','.mkv'].includes(ext)) icon = '🎬';
-        else if (['.mp3','.wav','.flac'].includes(ext)) icon = '🎵';
-        else if (['.zip','.rar','.7z','.tar','.gz'].includes(ext)) icon = '📦';
-        else if (['.exe','.msi','.bat','.ps1','.sh'].includes(ext)) icon = '⚙️';
-        else if (['.pdf'].includes(ext)) icon = '📕';
-        else if (['.docx','.doc','.txt','.md'].includes(ext)) icon = '📝';
-        else if (['.xlsx','.xls','.csv'].includes(ext)) icon = '📊';
-        else if (['.html','.css','.js','.json','.xml','.yaml'].includes(ext)) icon = '💻';
-        
-        return '<span class="cell-name" title="'+escH(data)+'">'+icon+' '+escH(data)+'</span>'; 
+        return '<span class="cell-name" title="'+escH(data)+'">'+escH(data)+'</span>'; 
       }
     },
     {
@@ -1866,7 +1877,7 @@ const table = new DataTable('#file-table', {
       data: 'sizeBytes',
       title: 'Größe',
       render: function(data, type) {
-        if (type === 'sort' || type === 'type') return data;
+        if (type !== 'display') return data;
         var cls = 'cell-size';
         if (data >= 524288000) cls += ' size-danger';
         else if (data >= 52428800) cls += ' size-warn';
@@ -1878,7 +1889,7 @@ const table = new DataTable('#file-table', {
     { data: 'sizeMB', title: 'MB', visible: false, render: DataTable.render.number('.', ',', 2, '', ' MB') },
     
     { data: 'created', title: 'Erstellt', visible: false },
-    { data: 'modified', title: 'Geändert', render: function(data, type) { if (type === 'sort' || type === 'type') return data; return '<span style="white-space:nowrap">' + escH(data) + '</span>'; } },
+    { data: 'modified', title: 'Geändert', render: function(data, type) { if (type !== 'display') return data; return '<span style="white-space:nowrap">' + escH(data) + '</span>'; } },
     
     { 
       data: 'readOnly', title: '🔒', visible: false,
