@@ -1097,23 +1097,23 @@ function applyFilters() {
   if (activeFilters.ext.size > 0) {
     // Escape special chars for regex (e.g. . ++ etc)
     const regex = Array.from(activeFilters.ext).map(e => '^' + e.replace(/[.*+?^\x24{}()|[\x5D\x5C]/g, '\\$&') + '$').join('|');
-    table.column(1).search(regex, true, false);
+    table.column(2).search(regex, true, false);
   } else {
-    table.column(1).search('');
+    table.column(2).search('');
   }
 
   // Convertible Filter
   if (activeFilters.conv) {
-    table.column(10).search(activeFilters.conv);
+    table.column(11).search(activeFilters.conv);
   } else {
-    table.column(10).search('');
+    table.column(11).search('');
   }
 
   // Folder Filter (from treemap click)
   if (activeFilters.folder) {
-    table.column(2).search('^' + escRx(activeFilters.folder), true, false);
+    table.column(3).search('^' + escRx(activeFilters.folder), true, false);
   } else {
-    table.column(2).search('');
+    table.column(3).search('');
   }
 
   table.draw();
@@ -2150,9 +2150,9 @@ function buildTop10() {
 // === FOLDER PATH SEARCH ===
 function filterByPath(query) {
   if (!query || query.trim() === '') {
-    table.column(2).search('');
+    table.column(3).search('');
   } else {
-    table.column(2).search(query);
+    table.column(3).search(query);
   }
   table.draw();
 }
