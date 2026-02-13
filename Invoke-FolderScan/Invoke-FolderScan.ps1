@@ -37,6 +37,21 @@
     If specified, delta comparison is allowed even when the previous scan was created for a different root path.
     By default, delta is skipped across different scan roots to avoid false comparisons.
 
+.PARAMETER StagingPath
+    Path to the staging folder. Used for pipeline status detection (kopiert/veredelt).
+    Files found in this folder are marked as 'kopiert' in the dashboard.
+
+.PARAMETER ErgebnisPath
+    Path to the result folder (Docling output). Files found here are marked as 'veredelt'.
+
+.PARAMETER PassThru
+    If specified, returns the file list as PowerShell objects for further processing.
+    Without this switch, no objects are written to the pipeline.
+
+.PARAMETER NoGui
+    If specified, skips HTML dashboard generation and browser launch.
+    Useful for scripted/automated runs where only the CSV is needed.
+
 .NOTES
     Name:    Invoke-FolderScan
     Author:  Benjamin Rauser
@@ -71,6 +86,15 @@
 
 .EXAMPLE
     Invoke-FolderScan -LoadLatest -OutputDir "./scan-results"
+
+.EXAMPLE
+    Invoke-FolderScan -Path "D:\Docs" -Recurse -StagingPath "D:\Staging"
+    # Scan with pipeline status detection
+
+.EXAMPLE
+    $files = Invoke-FolderScan -Path "D:\Docs" -Recurse -PassThru -NoGui
+    $files | Where-Object { $_.IsConvertible } | Out-GridView
+    # Scan without dashboard, capture results for scripting
 #>
 
 function Invoke-FolderScan {
@@ -92,7 +116,15 @@ function Invoke-FolderScan {
     [switch]$LoadLatest,
 
     [Parameter(ParameterSetName = 'Scan')]
-    [switch]$AllowCrossPathDelta
+    [switch]$AllowCrossPathDelta,
+
+    [string]$StagingPath,
+
+    [string]$ErgebnisPath,
+
+    [switch]$PassThru,
+
+    [switch]$NoGui
   )
 
   # ═══════════════════════════════════════════════════════════════
@@ -300,9 +332,78 @@ function Invoke-FolderScan {
       ScannedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
       Recursive = [bool]$Recurse
       FileCount = $FileList.Count
+      StagingPath = if ($StagingPath) { $StagingPath } else { $null }
+      ErgebnisPath = if ($ErgebnisPath) { $ErgebnisPath } else { $null }
     }
     $scanMeta | ConvertTo-Json | Set-Content -Path $metaPath -Encoding UTF8
     Write-Host "[Invoke-FolderScan] Metadata exported: $metaPath" -ForegroundColor Green
+  }
+
+  # ═══════════════════════════════════════════════════════════════
+  # PIPELINE STATUS (Staging / Ergebnis check)
+  # ═══════════════════════════════════════════════════════════════
+  # If LoadLatest, try to restore StagingPath/ErgebnisPath from metadata
+  if ($LoadLatest -and -not $StagingPath -and -not $ErgebnisPath) {
+    if (Test-Path $metaPath) {
+      try {
+        $savedMeta = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($savedMeta.StagingPath)  { $StagingPath  = $savedMeta.StagingPath }
+        if ($savedMeta.ErgebnisPath) { $ErgebnisPath = $savedMeta.ErgebnisPath }
+      } catch {}
+    }
+  }
+
+  $hasPipeline = $false
+  $pipelineStats = @{ offen = 0; kopiert = 0; veredelt = 0 }
+
+  if ($StagingPath -or $ErgebnisPath) {
+    $hasPipeline = $true
+    $scanRootNorm = $ResolvedPath.TrimEnd('\')
+
+    if ($StagingPath)  { Write-Host "[Invoke-FolderScan] Staging:  $StagingPath" -ForegroundColor Cyan }
+    if ($ErgebnisPath) { Write-Host "[Invoke-FolderScan] Ergebnis: $ErgebnisPath" -ForegroundColor Cyan }
+
+    $pipelineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+    foreach ($f in $FileList) {
+      $relativePath = ''
+      if ($f.FullPath.StartsWith($scanRootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $relativePath = $f.FullPath.Substring($scanRootNorm.Length).TrimStart('\')
+      } else {
+        $relativePath = $f.Name
+      }
+
+      $status = 'offen'
+
+      # Check Ergebnis first (higher priority: veredelt > kopiert > offen)
+      if ($ErgebnisPath -and $relativePath) {
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($relativePath)
+        $relDir = [System.IO.Path]::GetDirectoryName($relativePath)
+        $mdPath = Join-Path $ErgebnisPath (Join-Path $relDir "$baseName.md")
+        if (Test-Path $mdPath) {
+          $status = 'veredelt'
+        }
+      }
+
+      # Check Staging (only if not already veredelt)
+      if ($status -eq 'offen' -and $StagingPath -and $relativePath) {
+        $stagingFile = Join-Path $StagingPath $relativePath
+        if (Test-Path $stagingFile) {
+          $status = 'kopiert'
+        }
+      }
+
+      $f | Add-Member -NotePropertyName 'PipelineStatus' -NotePropertyValue $status -Force
+      $pipelineStats[$status]++
+    }
+
+    $pipelineStopwatch.Stop()
+    Write-Host "[Invoke-FolderScan] Pipeline status: $($pipelineStats.offen) offen, $($pipelineStats.kopiert) kopiert, $($pipelineStats.veredelt) veredelt ($([math]::Round($pipelineStopwatch.Elapsed.TotalSeconds, 2))s)" -ForegroundColor Green
+  } else {
+    # No pipeline paths: set empty status
+    foreach ($f in $FileList) {
+      $f | Add-Member -NotePropertyName 'PipelineStatus' -NotePropertyValue '' -Force
+    }
   }
 
   # ═══════════════════════════════════════════════════════════════
@@ -375,6 +476,16 @@ function Invoke-FolderScan {
   }
 
   # ═══════════════════════════════════════════════════════════════
+  # GENERATE DASHBOARD (skip with -NoGui)
+  # ═══════════════════════════════════════════════════════════════
+  if ($NoGui) {
+    Write-Host "[Invoke-FolderScan] -NoGui: Dashboard generation skipped." -ForegroundColor DarkGray
+    Write-Host "[Invoke-FolderScan] CSV: $csvPath" -ForegroundColor Green
+    Write-Host "`n[Invoke-FolderScan] Done! $($FileList.Count) files. Results: $OutputDir" -ForegroundColor Green
+    if ($PassThru) { return $FileList } else { return }
+  }
+
+  # ═══════════════════════════════════════════════════════════════
   # GENERATE data.js (separate file for performance)
   # ═══════════════════════════════════════════════════════════════
   Write-Host "[Invoke-FolderScan] Generating data.js..." -ForegroundColor Yellow
@@ -402,7 +513,8 @@ function Invoke-FolderScan {
     elseif ($deltaModSet.ContainsKey($f.FullPath)) { $status = 'modified' }
 
     $comma = if ($i -lt $FileList.Count - 1) { ',' } else { '' }
-    $sw.WriteLine("{`"name`":`"$n`",`"ext`":`"$($f.Extension)`",`"fullPath`":`"$fp`",`"dir`":`"$dn`",`"sizeBytes`":$($f.SizeBytes),`"sizeKB`":$($f.SizeKB),`"sizeMB`":$($f.SizeMB),`"created`":`"$($f.CreationTime)`",`"modified`":`"$($f.LastWriteTime)`",`"readOnly`":$($f.IsReadOnly.ToString().ToLower()),`"convertible`":$($f.IsConvertible.ToString().ToLower()),`"status`":`"$status`"}$comma")
+    $pStatus = if ($f.PipelineStatus) { $f.PipelineStatus } else { '' }
+    $sw.WriteLine("{`"name`":`"$n`",`"ext`":`"$($f.Extension)`",`"fullPath`":`"$fp`",`"dir`":`"$dn`",`"sizeBytes`":$($f.SizeBytes),`"sizeKB`":$($f.SizeKB),`"sizeMB`":$($f.SizeMB),`"created`":`"$($f.CreationTime)`",`"modified`":`"$($f.LastWriteTime)`",`"readOnly`":$($f.IsReadOnly.ToString().ToLower()),`"convertible`":$($f.IsConvertible.ToString().ToLower()),`"status`":`"$status`",`"pipeline`":`"$pStatus`"}$comma")
     $i++
   }
   $sw.WriteLine("];")
@@ -910,42 +1022,6 @@ $themeCss
 
   $deltaHtml
 
-  <!-- Quick Export -->
-  <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
-    <button class="qf-btn qf-btn-accent" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📄 CSV (Ansicht)</button>
-    <button class="qf-btn qf-btn-accent" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📊 Excel (Ansicht)</button>
-    <span style="border-left:1px solid var(--border-glass);height:1.5rem;margin:0 0.3rem"></span>
-    <button class="qf-btn" id="btn-pipeline-csv" onclick="exportPipelineCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem" title="Rohdaten CSV mit allen Feldern – gefiltert nach aktiver Auswahl">📋 Rohdaten CSV (gefiltert)</button>
-  </div>
-
-  <!-- Copy Command Builder -->
-  <div class="structure-section" id="cmd-builder" style="padding:1rem 1.5rem;margin-bottom:1.5rem">
-    <div class="section-header" style="margin-bottom:0.8rem">
-      <h2 onclick="toggleCmdBuilder()" style="font-size:1rem"><span class="collapse-arrow collapsed" id="cmd-arrow">▼</span> 📋 PowerShell-Befehl: Dateien kopieren</h2>
-    </div>
-    <div id="cmd-body" data-collapsed="1" style="transition: max-height 0.35s ease, opacity 0.25s ease; max-height: 0px; opacity: 0; overflow: hidden;">
-      <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.8rem">
-        Kopiert Dateien aus dem Scan in einen Zielordner (Ordnerstruktur bleibt erhalten).<br>
-        Passe den <strong>Zielordner</strong> an und füge den Befehl in PowerShell ein.
-      </div>
-      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap">
-        <label style="font-size:0.82rem;font-weight:500;color:var(--text-secondary)">Zielordner:</label>
-        <input type="text" id="cmd-dest" value="C:\Output\ConvertibleFiles" style="flex:1;min-width:200px;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace" oninput="updateCopyCommand()">
-        <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
-          <input type="checkbox" id="cmd-conv" checked onchange="updateCopyCommand()"> Nur Konvertierbare
-        </label>
-        <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
-          <input type="checkbox" id="cmd-whatif" onchange="updateCopyCommand()"> -WhatIf (Testlauf)
-        </label>
-      </div>
-      <div style="position:relative">
-        <pre id="cmd-output" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.8rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.78rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyCmdToClipboard()" title="Klicken zum Kopieren"></pre>
-        <button onclick="copyCmdToClipboard()" style="position:absolute;top:0.4rem;right:0.4rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer">📋 Kopieren</button>
-      </div>
-      <div id="cmd-copied" style="font-size:0.75rem;color:var(--success);margin-top:0.3rem;opacity:0;transition:opacity 0.3s"></div>
-    </div>
-  </div>
-
   <!-- Activity Chart -->
   <div class="structure-section activity-section" id="activity-section">
     <div class="section-header">
@@ -1053,6 +1129,102 @@ $themeCss
     </table>
   </div>
 
+  <!-- Workflow Guide -->
+  <div class="structure-section" id="workflow-guide" style="padding:1.5rem 2rem;margin:1.5rem 0;border:2px solid var(--accent);border-radius:var(--radius-card);background:var(--bg-card)">
+    <h2 style="margin:0 0 1rem 0;font-size:1.1rem">Dateien verarbeiten &mdash; Schritt f&uuml;r Schritt</h2>
+
+    <!-- Step 1: Filter -->
+    <div class="wf-step" style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.2rem;padding-bottom:1.2rem;border-bottom:1px solid var(--border-glass)">
+      <div style="min-width:2.2rem;height:2.2rem;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0">1</div>
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">Dateien filtern</div>
+        <div style="font-size:0.82rem;color:var(--text-muted)">Nutze die Filter oben (Konvertierbar, Dateityp, Ordner), um nur die Dateien anzuzeigen, die du verarbeiten m&ouml;chtest.<br>
+        <strong>Aktuell im Filter:</strong> <span id="wf-filter-count" style="color:var(--accent);font-weight:600">0</span> Dateien</div>
+      </div>
+    </div>
+
+    <!-- Step 2: Export Pipeline CSV -->
+    <div class="wf-step" style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.2rem;padding-bottom:1.2rem;border-bottom:1px solid var(--border-glass)">
+      <div style="min-width:2.2rem;height:2.2rem;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0">2</div>
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">Arbeitsliste exportieren &amp; verschieben</div>
+        <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">Exportiere die gefilterte Auswahl als CSV. Die Datei landet im Browser-Downloads-Ordner &mdash; f&uuml;hre danach den angezeigten Befehl aus, um sie in den <strong>scan-results</strong> Ordner zu verschieben.</div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+          <button class="qf-btn qf-btn-accent" id="btn-pipeline-csv" onclick="exportPipelineCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📋 Arbeitsliste speichern (CSV)</button>
+          <span id="wf-csv-saved" style="font-size:0.8rem;color:var(--success);opacity:0;transition:opacity 0.3s"></span>
+        </div>
+        <div id="wf-move-section" style="display:none;margin-top:0.6rem">
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.3rem">Diesen Befehl in PowerShell ausf&uuml;hren, um die Datei in den richtigen Ordner zu verschieben:</div>
+          <div style="position:relative">
+            <pre id="wf-move-cmd" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.6rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyMoveCmd()"></pre>
+            <button onclick="copyMoveCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
+          </div>
+          <div id="wf-move-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Review -->
+    <div class="wf-step" style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.2rem;padding-bottom:1.2rem;border-bottom:1px solid var(--border-glass)">
+      <div style="min-width:2.2rem;height:2.2rem;border-radius:50%;background:var(--text-muted);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0" id="wf-step3-num">3</div>
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">&Ouml;ffnen &amp; pr&uuml;fen</div>
+        <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">Pr&uuml;fe die Arbeitsliste bevor du kopierst. Du kannst sie in Excel &ouml;ffnen oder mit diesem Befehl interaktiv anzeigen:</div>
+        <div id="wf-review-section" style="display:none">
+          <div style="position:relative">
+            <pre id="wf-review-cmd" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.6rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyReviewCmd()"></pre>
+            <button onclick="copyReviewCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
+          </div>
+          <div id="wf-review-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.3rem">L&ouml;sche Zeilen die du nicht kopieren m&ouml;chtest. Erst wenn du zufrieden bist &rarr; weiter zu Schritt 4.</div>
+        </div>
+        <div id="wf-review-placeholder" style="font-size:0.78rem;color:var(--text-muted);opacity:0.5;font-style:italic">Wird nach Schritt 2 freigeschaltet</div>
+      </div>
+    </div>
+
+    <!-- Step 4: Copy Command -->
+    <div class="wf-step" style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.2rem;padding-bottom:1.2rem;border-bottom:1px solid var(--border-glass)">
+      <div style="min-width:2.2rem;height:2.2rem;border-radius:50%;background:var(--text-muted);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0" id="wf-step4-num">4</div>
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">In Staging kopieren</div>
+        <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">F&uuml;ge den Befehl in PowerShell ein. Die Ordnerstruktur wird 1:1 gespiegelt. Bereits vorhandene Dateien werden &uuml;bersprungen.</div>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap">
+          <label style="font-size:0.82rem;font-weight:500;color:var(--text-secondary)">Staging-Ordner:</label>
+          <input type="text" id="cmd-dest" value="$(if ($StagingPath) { $StagingPath } else { 'D:\Staging' })" style="flex:1;min-width:200px;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace" oninput="updateCopyCommand()">
+          <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
+            <input type="checkbox" id="cmd-whatif" onchange="updateCopyCommand()"> -WhatIf (Testlauf)
+          </label>
+        </div>
+        <div style="position:relative">
+          <pre id="cmd-output" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.8rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.78rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer;opacity:0.4" onclick="copyCmdToClipboard()" title="Erst Arbeitsliste exportieren (Schritt 2)" id="cmd-output-pre">Bitte erst Arbeitsliste exportieren (Schritt 2)</pre>
+          <button onclick="copyCmdToClipboard()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer" id="btn-copy-cmd" disabled>📋 Kopieren</button>
+        </div>
+        <div id="cmd-copied" style="font-size:0.75rem;color:var(--success);margin-top:0.3rem;opacity:0;transition:opacity 0.3s"></div>
+      </div>
+    </div>
+
+    <!-- Step 5: Rescan -->
+    <div class="wf-step" style="display:flex;gap:1rem;align-items:flex-start">
+      <div style="min-width:2.2rem;height:2.2rem;border-radius:50%;background:var(--text-muted);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0" id="wf-step5-num">5</div>
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">Rescan &mdash; Status pr&uuml;fen</div>
+        <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">F&uuml;hre den Scan erneut aus, um den Pipeline-Status zu aktualisieren. Das Dashboard zeigt dann welche Dateien bereits kopiert/veredelt sind.</div>
+        <div style="position:relative">
+          <pre id="cmd-rescan" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.6rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyRescanCmd()">Invoke-FolderScan -Path "$ResolvedPath" -Recurse -StagingPath "$(if ($StagingPath) { $StagingPath } else { 'D:\Staging' })"</pre>
+          <button onclick="copyRescanCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
+        </div>
+        <div id="wf-rescan-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
+      </div>
+    </div>
+
+    <!-- Quick exports (less prominent, at the bottom) -->
+    <div style="margin-top:1.2rem;padding-top:1rem;border-top:1px solid var(--border-glass);display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+      <span style="font-size:0.78rem;color:var(--text-muted);margin-right:0.3rem">Sonstige Exporte:</span>
+      <button class="qf-btn" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.78rem;padding:0.35rem 0.8rem">📄 CSV (Ansicht)</button>
+      <button class="qf-btn" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.78rem;padding:0.35rem 0.8rem">📊 Excel (Ansicht)</button>
+    </div>
+  </div>
+
   <!-- Info Box -->
   <div class="info-box">
     <h2>ℹ️ Konvertierbare Dateitypen (Ducling / Markdown)</h2>
@@ -1087,6 +1259,14 @@ const SCAN_ROOT = "$($ResolvedPath -replace '\\', '\\\\')";
 const scanRoot = SCAN_ROOT.replace(/\\\\/g, '\\');
 const CSV_PATH = "$($csvPath -replace '\\', '\\\\')";
 const csvPath = CSV_PATH.replace(/\\\\/g, '\\');
+const HAS_PIPELINE = $(if ($hasPipeline) { 'true' } else { 'false' });
+const STAGING_PATH = "$(if ($StagingPath) { $StagingPath -replace '\\', '\\\\' } else { '' })";
+const stagingPath = STAGING_PATH.replace(/\\\\/g, '\\');
+const ERGEBNIS_PATH = "$(if ($ErgebnisPath) { $ErgebnisPath -replace '\\', '\\\\' } else { '' })";
+const ergebnisPath = ERGEBNIS_PATH.replace(/\\\\/g, '\\');
+const DOWNLOADS_PATH = "$(([Environment]::GetFolderPath('UserProfile') + '\Downloads') -replace '\\', '\\\\')";
+const downloadsPath = DOWNLOADS_PATH.replace(/\\\\/g, '\\');
+const pipelineStats = { offen: $($pipelineStats.offen), kopiert: $($pipelineStats.kopiert), veredelt: $($pipelineStats.veredelt) };
 const extData = [$extChartJson];
 const convData = [
   { label: 'Konvertierbar', count: $convertibleCount, percent: Math.round(($convertibleCount / ($totalFiles || 1)) * 1000) / 10 },
@@ -1098,7 +1278,8 @@ let currentTreemapMetric = 'count';
 const activeFilters = {
   ext: new Set(),
   conv: null, // null, 'Ja', 'Nein'
-  folder: null // absolute folder path for treemap click filter
+  folder: null, // absolute folder path for treemap click filter
+  pipeline: null // null, 'offen', 'kopiert', 'veredelt'
 };
 let currentOtherExtLabels = [];
 let extSelectionBeforeConvAuto = null;
@@ -1147,6 +1328,13 @@ function applyFilters() {
     table.column(3).search('');
   }
 
+  // Pipeline Filter
+  if (activeFilters.pipeline) {
+    table.column(13).search('^' + activeFilters.pipeline + '$', true, false);
+  } else {
+    table.column(13).search('');
+  }
+
   table.draw();
   updateVisuals();
   updateFolderIndicator();
@@ -1168,8 +1356,14 @@ function getFilteredFiles() {
     if (activeFilters.ext.size > 0 && !activeFilters.ext.has(ext)) return false;
     if (activeFilters.conv === 'Ja' && !f.convertible) return false;
     if (activeFilters.conv === 'Nein' && f.convertible) return false;
+    if (activeFilters.pipeline && f.pipeline !== activeFilters.pipeline) return false;
     return true;
   });
+}
+
+function togglePipeline(val) {
+  activeFilters.pipeline = (activeFilters.pipeline === val) ? null : val;
+  applyFilters();
 }
 
 function updateVisuals() {
@@ -1214,6 +1408,22 @@ function updateVisuals() {
     btnConvNo.textContent = '\u274c Nur Nicht-Konvertierbare (' + nonConvCount + ')';
     btnConvNo.classList.toggle('active-filter', activeFilters.conv === 'Nein');
   }
+
+  // Pipeline buttons
+  if (HAS_PIPELINE) {
+    var pCounts = { offen: 0, kopiert: 0, veredelt: 0 };
+    filtered.forEach(function(f) { if (f.pipeline && pCounts.hasOwnProperty(f.pipeline)) pCounts[f.pipeline]++; });
+    var bO = document.getElementById('btn-pipe-offen');
+    if (bO) { bO.textContent = '\u23F3 Offen (' + pCounts.offen + ')'; bO.classList.toggle('active-filter', activeFilters.pipeline === 'offen'); }
+    var bK = document.getElementById('btn-pipe-kopiert');
+    if (bK) { bK.textContent = '\ud83d\udce6 Kopiert (' + pCounts.kopiert + ')'; bK.classList.toggle('active-filter', activeFilters.pipeline === 'kopiert'); }
+    var bV = document.getElementById('btn-pipe-veredelt');
+    if (bV) { bV.textContent = '\u2705 Veredelt (' + pCounts.veredelt + ')'; bV.classList.toggle('active-filter', activeFilters.pipeline === 'veredelt'); }
+  }
+
+  // Workflow guide: update filter count
+  var wfCount = document.getElementById('wf-filter-count');
+  if (wfCount) wfCount.textContent = filtered.length;
 
   // Update stat cards
   updateStatCards(filtered);
@@ -1369,6 +1579,7 @@ function toggleConv(val) {
 function clearAllFilters() {
   activeFilters.ext.clear();
   activeFilters.conv = null;
+  activeFilters.pipeline = null;
   extSelectionBeforeConvAuto = null;
   var hadFolder = activeFilters.folder;
   activeFilters.folder = null;
@@ -1741,6 +1952,34 @@ drawPie('pie-conv','tip-conv','leg-conv', convData, ['#4ade80','#475569'], 180, 
   btnConvNo.onclick = () => toggleConv('Nein');
   c.appendChild(btnConvNo);
 
+  // Pipeline filter buttons (only if pipeline paths were provided)
+  if (HAS_PIPELINE) {
+    var sepP = document.createElement('span');
+    sepP.className = 'filter-bar-sep';
+    c.appendChild(sepP);
+
+    var btnOffen = document.createElement('button');
+    btnOffen.className = 'qf-btn';
+    btnOffen.id = 'btn-pipe-offen';
+    btnOffen.textContent = '\u23F3 Offen (' + pipelineStats.offen + ')';
+    btnOffen.onclick = function() { togglePipeline('offen'); };
+    c.appendChild(btnOffen);
+
+    var btnKopiert = document.createElement('button');
+    btnKopiert.className = 'qf-btn';
+    btnKopiert.id = 'btn-pipe-kopiert';
+    btnKopiert.textContent = '\ud83d\udce6 Kopiert (' + pipelineStats.kopiert + ')';
+    btnKopiert.onclick = function() { togglePipeline('kopiert'); };
+    c.appendChild(btnKopiert);
+
+    var btnVeredelt = document.createElement('button');
+    btnVeredelt.className = 'qf-btn';
+    btnVeredelt.id = 'btn-pipe-veredelt';
+    btnVeredelt.textContent = '\u2705 Veredelt (' + pipelineStats.veredelt + ')';
+    btnVeredelt.onclick = function() { togglePipeline('veredelt'); };
+    c.appendChild(btnVeredelt);
+  }
+
   // Separator
   var sep = document.createElement('span');
   sep.className = 'filter-bar-sep';
@@ -1946,6 +2185,18 @@ const table = new DataTable('#file-table', {
       visible: HAS_DELTA
     },
     {
+      data: 'pipeline',
+      title: 'Pipeline',
+      render: function(data, type) {
+        if (type !== 'display') return data || '';
+        if (data === 'veredelt') return '<span class="badge badge-yes">Veredelt</span>';
+        if (data === 'kopiert') return '<span class="badge badge-modified">Kopiert</span>';
+        if (data === 'offen') return '<span class="badge badge-no">Offen</span>';
+        return '';
+      },
+      visible: HAS_PIPELINE
+    },
+    {
       data: 'dir',
       title: '\ud83d\udcc2',
       orderable: false,
@@ -1982,7 +2233,7 @@ function exportPipelineCSV() {
   var filtered = getFilteredFiles();
   if (filtered.length === 0) { alert('Keine Dateien im aktuellen Filter.'); return; }
 
-  var cols = ['Name','Extension','FullPath','DirectoryName','SizeBytes','SizeKB','SizeMB','CreationTime','LastWriteTime','IsReadOnly','IsConvertible','Status'];
+  var cols = ['Name','Extension','FullPath','DirectoryName','SizeBytes','SizeKB','SizeMB','CreationTime','LastWriteTime','IsReadOnly','IsConvertible','Status','PipelineStatus'];
   var rows = [cols.join(',')];
 
   filtered.forEach(function(f) {
@@ -2000,53 +2251,108 @@ function exportPipelineCSV() {
       '"' + (f.modified || '') + '"',
       f.readOnly ? 'True' : 'False',
       f.convertible ? 'True' : 'False',
-      '"' + (f.status || 'unchanged') + '"'
+      '"' + (f.status || 'unchanged') + '"',
+      '"' + (f.pipeline || '') + '"'
     ];
     rows.push(line.join(','));
   });
+
+  // Generate timestamp filename
+  var now = new Date();
+  var ts = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0');
+  var fileName = 'Pipeline_' + ts + '.csv';
 
   var csv = '\uFEFF' + rows.join('\r\n');
   var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'FolderScan_Pipeline.csv';
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+
+  // Track exported CSV and unlock step 4
+  lastPipelineCsvName = fileName;
+  var scanResultsDir = csvPath.replace(/[^\\]+$/, '');
+  lastPipelineCsvFullPath = scanResultsDir + fileName;
+
+  var savedEl = document.getElementById('wf-csv-saved');
+  if (savedEl) { savedEl.textContent = 'Download gestartet: ' + fileName; savedEl.style.opacity = '1'; }
+
+  // Show move command
+  var moveSection = document.getElementById('wf-move-section');
+  var moveCmd = document.getElementById('wf-move-cmd');
+  if (moveSection && moveCmd) {
+    moveCmd.textContent = 'Move-Item "' + downloadsPath + '\\' + fileName + '" "' + scanResultsDir.slice(0, -1) + '"';
+    moveSection.style.display = 'block';
+  }
+
+  // Show review command (Step 3)
+  var reviewSection = document.getElementById('wf-review-section');
+  var reviewCmd = document.getElementById('wf-review-cmd');
+  var reviewPlaceholder = document.getElementById('wf-review-placeholder');
+  if (reviewSection && reviewCmd) {
+    reviewCmd.textContent = 'Import-Csv "' + lastPipelineCsvFullPath + '" | Out-GridView -Title "Arbeitsliste pruefen"';
+    reviewSection.style.display = 'block';
+    if (reviewPlaceholder) reviewPlaceholder.style.display = 'none';
+  }
+
+  // Activate steps 3-5
+  ['wf-step3-num','wf-step4-num','wf-step5-num'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.background = 'var(--accent)';
+  });
+
+  // Unlock copy command
+  var cmdEl = document.getElementById('cmd-output');
+  if (cmdEl) { cmdEl.style.opacity = '1'; cmdEl.title = 'Klicken zum Kopieren'; }
+  var btnCopy = document.getElementById('btn-copy-cmd');
+  if (btnCopy) btnCopy.disabled = false;
+
+  updateCopyCommand();
 }
 
+// === WORKFLOW STATE ===
+var lastPipelineCsvName = null;
+var lastPipelineCsvFullPath = null;
 
+function copyMoveCmd() {
+  var el = document.getElementById('wf-move-cmd');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    var msg = document.getElementById('wf-move-copied');
+    if (msg) { msg.textContent = 'In Zwischenablage kopiert!'; msg.style.opacity = '1'; setTimeout(function() { msg.style.opacity = '0'; }, 2000); }
+  });
+}
 
-// === COMMAND BUILDER ===
-function toggleCmdBuilder() {
-  var body = document.getElementById('cmd-body');
-  var arrow = document.getElementById('cmd-arrow');
-  if (!body) return;
-  var collapsed = body.dataset.collapsed === '1';
-  if (collapsed) {
-    body.dataset.collapsed = '0';
-    body.style.maxHeight = '600px';
-    body.style.opacity = '1';
-    arrow.classList.remove('collapsed');
-    updateCopyCommand();
-  } else {
-    body.dataset.collapsed = '1';
-    body.style.maxHeight = '0px';
-    body.style.opacity = '0';
-    arrow.classList.add('collapsed');
-  }
+function copyReviewCmd() {
+  var el = document.getElementById('wf-review-cmd');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    var msg = document.getElementById('wf-review-copied');
+    if (msg) { msg.textContent = 'In Zwischenablage kopiert!'; msg.style.opacity = '1'; setTimeout(function() { msg.style.opacity = '0'; }, 2000); }
+  });
+}
+
+function copyRescanCmd() {
+  var el = document.getElementById('cmd-rescan');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    var msg = document.getElementById('wf-rescan-copied');
+    if (msg) { msg.textContent = 'In Zwischenablage kopiert!'; msg.style.opacity = '1'; setTimeout(function() { msg.style.opacity = '0'; }, 2000); }
+  });
 }
 
 function updateCopyCommand() {
-  var dest = document.getElementById('cmd-dest').value || 'C:\\Output';
-  var onlyConv = document.getElementById('cmd-conv').checked;
+  if (!lastPipelineCsvFullPath) return;
+  var dest = document.getElementById('cmd-dest').value || 'D:\\Staging';
   var whatIf = document.getElementById('cmd-whatif').checked;
+  var scriptDir = csvPath.replace(/[^\\]+$/, '');
 
-  var cmd = '. "' + csvPath.replace(/[^\\]+$/, '') + 'Copy-ScannedFiles.ps1"\n';
-  cmd += 'Copy-ScannedFiles -CsvPath "' + csvPath + '" -Destination "' + dest + '"';
-  if (onlyConv) cmd += ' -OnlyConvertible';
+  var cmd = '. "' + scriptDir + 'Copy-ScannedFiles.ps1"\n';
+  cmd += 'Copy-ScannedFiles -CsvPath "' + lastPipelineCsvFullPath + '" -Destination "' + dest + '"';
   if (whatIf) cmd += ' -WhatIf';
 
   var el = document.getElementById('cmd-output');
@@ -2054,13 +2360,16 @@ function updateCopyCommand() {
 }
 
 function copyCmdToClipboard() {
+  if (!lastPipelineCsvFullPath) {
+    alert('Bitte erst Arbeitsliste exportieren (Schritt 2).');
+    return;
+  }
   var el = document.getElementById('cmd-output');
   if (!el) return;
-  var text = el.textContent;
-  navigator.clipboard.writeText(text).then(function() {
+  navigator.clipboard.writeText(el.textContent).then(function() {
     var msg = document.getElementById('cmd-copied');
     if (msg) {
-      msg.textContent = '✅ In Zwischenablage kopiert!';
+      msg.textContent = 'In Zwischenablage kopiert!';
       msg.style.opacity = '1';
       setTimeout(function() { msg.style.opacity = '0'; }, 2000);
     }
@@ -2289,8 +2598,10 @@ jQuery(document).ready(function() {
   Start-Process $htmlPath
   Write-Host "[Invoke-FolderScan] Dashboard opened in browser." -ForegroundColor Cyan
 
-  Write-Host "`n[Invoke-FolderScan] Done! $totalFiles files. Results: $OutputDir" -ForegroundColor Green
-  Write-Host "[Invoke-FolderScan] Tip: `$result | Where-Object { `$_.IsConvertible } | Out-GridView" -ForegroundColor DarkGray
+  Write-Host "`n[Invoke-FolderScan] Done! $($FileList.Count) files. Results: $OutputDir" -ForegroundColor Green
+  if (-not $PassThru) {
+    Write-Host "[Invoke-FolderScan] Tip: Invoke-FolderScan ... -PassThru um Objekte zurueckzubekommen" -ForegroundColor DarkGray
+  }
 
-  return $FileList
+  if ($PassThru) { return $FileList }
 }
