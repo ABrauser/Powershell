@@ -33,6 +33,10 @@
 .PARAMETER LoadLatest
     If specified, loads the most recent FullScan.csv from OutputDir instead of scanning.
 
+.PARAMETER AllowCrossPathDelta
+    If specified, delta comparison is allowed even when the previous scan was created for a different root path.
+    By default, delta is skipped across different scan roots to avoid false comparisons.
+
 .NOTES
     Name:    Invoke-FolderScan
     Author:  Benjamin Rauser
@@ -85,7 +89,10 @@ function Invoke-FolderScan {
     [string]$Theme = 'dark',
 
     [Parameter(Mandatory = $true, ParameterSetName = 'Load')]
-    [switch]$LoadLatest
+    [switch]$LoadLatest,
+
+    [Parameter(ParameterSetName = 'Scan')]
+    [switch]$AllowCrossPathDelta
   )
 
   # ═══════════════════════════════════════════════════════════════
@@ -106,6 +113,7 @@ function Invoke-FolderScan {
   $OutputDir = (Resolve-Path $OutputDir).Path
 
   $csvPath = Join-Path $OutputDir "FullScan.csv"
+  $metaPath = Join-Path $OutputDir "FullScan.meta.json"
   $FileList = $null
   $deltaInfo = $null
   $scanDuration = 0
@@ -131,7 +139,21 @@ function Invoke-FolderScan {
       $_
     }
     if ($FileList -isnot [System.Array]) { $FileList = @($FileList) }
-    $ResolvedPath = if ($FileList.Count -gt 0) {
+    $resolvedFromMeta = $null
+    if (Test-Path $metaPath) {
+      try {
+        $scanMeta = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($scanMeta.ScanRoot) {
+          $resolvedFromMeta = [string]$scanMeta.ScanRoot
+        }
+      }
+      catch {}
+    }
+
+    $ResolvedPath = if ($resolvedFromMeta) {
+      $resolvedFromMeta
+    }
+    elseif ($FileList.Count -gt 0) {
       # Try to find common root
       ($FileList[0].DirectoryName)
     }
@@ -185,44 +207,102 @@ function Invoke-FolderScan {
       Write-Host "[Invoke-FolderScan] Previous scan found. Calculating delta..." -ForegroundColor Yellow
       $previousFiles = Import-Csv -Path $csvPath -Encoding UTF8
 
-      $prevPaths = @{}
-      foreach ($pf in $previousFiles) {
-        $prevPaths[$pf.FullPath] = $pf.LastWriteTime
+      $previousScanRoot = $null
+      $previousRootSource = $null
+      if (Test-Path $metaPath) {
+        try {
+          $previousMeta = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($previousMeta.ScanRoot) {
+            $previousScanRoot = [string]$previousMeta.ScanRoot
+            $previousRootSource = 'meta'
+          }
+        }
+        catch {}
+      }
+      if (-not $previousScanRoot -and $previousFiles.Count -gt 0) {
+        $previousScanRoot = [string]$previousFiles[0].DirectoryName
+        $previousRootSource = 'csv'
       }
 
-      $currPaths = @{}
-      foreach ($cf in $FileList) {
-        $currPaths[$cf.FullPath] = $cf.LastWriteTime
+      $shouldComputeDelta = $true
+      if (-not $AllowCrossPathDelta -and $previousScanRoot) {
+        $currNorm = $ResolvedPath.TrimEnd('\').ToLowerInvariant()
+        $prevNorm = $previousScanRoot.TrimEnd('\').ToLowerInvariant()
+        $rootsCompatible = $false
+
+        if ($previousRootSource -eq 'meta') {
+          $rootsCompatible = ($currNorm -eq $prevNorm)
+        }
+        else {
+          # Fallback (legacy CSV without metadata): treat parent/child as compatible to reduce false negatives.
+          $rootsCompatible = (
+            $currNorm -eq $prevNorm -or
+            $prevNorm.StartsWith($currNorm + '\') -or
+            $currNorm.StartsWith($prevNorm + '\')
+          )
+        }
+
+        if (-not $rootsCompatible) {
+          $shouldComputeDelta = $false
+          Write-Warning "[Invoke-FolderScan] Delta skipped: previous scan root '$previousScanRoot' differs from current '$ResolvedPath'. Use -AllowCrossPathDelta to force comparison."
+        }
       }
 
-      $newFiles = @($FileList | Where-Object { -not $prevPaths.ContainsKey($_.FullPath) })
-      $deletedPaths = @($previousFiles | Where-Object { -not $currPaths.ContainsKey($_.FullPath) })
-      $modifiedFiles = @($FileList | Where-Object {
-          $prevPaths.ContainsKey($_.FullPath) -and $prevPaths[$_.FullPath] -ne $_.LastWriteTime
-        })
+      if ($shouldComputeDelta) {
+        $prevPaths = @{}
+        foreach ($pf in $previousFiles) {
+          $prevPaths[$pf.FullPath] = $pf.LastWriteTime
+        }
 
-      $deltaInfo = @{
-        NewCount      = $newFiles.Count
-        DeletedCount  = $deletedPaths.Count
-        ModifiedCount = $modifiedFiles.Count
-        NewPaths      = ($newFiles | Select-Object -ExpandProperty FullPath)
-        DeletedPaths  = ($deletedPaths | Select-Object -ExpandProperty FullPath)
-        ModifiedPaths = ($modifiedFiles | Select-Object -ExpandProperty FullPath)
-        PreviousDate  = (Get-Item $csvPath).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+        $currPaths = @{}
+        foreach ($cf in $FileList) {
+          $currPaths[$cf.FullPath] = $cf.LastWriteTime
+        }
+
+        $newFiles = @($FileList | Where-Object { -not $prevPaths.ContainsKey($_.FullPath) })
+        $deletedPaths = @($previousFiles | Where-Object { -not $currPaths.ContainsKey($_.FullPath) })
+        $modifiedFiles = @($FileList | Where-Object {
+            $prevPaths.ContainsKey($_.FullPath) -and $prevPaths[$_.FullPath] -ne $_.LastWriteTime
+          })
+
+        $deltaInfo = @{
+          NewCount      = $newFiles.Count
+          DeletedCount  = $deletedPaths.Count
+          ModifiedCount = $modifiedFiles.Count
+          NewPaths      = @($newFiles | Select-Object -ExpandProperty FullPath)
+          DeletedPaths  = @($deletedPaths | Select-Object -ExpandProperty FullPath)
+          ModifiedPaths = @($modifiedFiles | Select-Object -ExpandProperty FullPath)
+          PreviousDate  = (Get-Item $csvPath).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+        }
+
+        Write-Host "[Invoke-FolderScan] Delta: $($deltaInfo.NewCount) new, $($deltaInfo.DeletedCount) deleted, $($deltaInfo.ModifiedCount) modified" -ForegroundColor Cyan
       }
-
-      Write-Host "[Invoke-FolderScan] Delta: $($deltaInfo.NewCount) new, $($deltaInfo.DeletedCount) deleted, $($deltaInfo.ModifiedCount) modified" -ForegroundColor Cyan
 
       # Rename old CSV
       $oldDate = (Get-Item $csvPath).LastWriteTime.ToString('yyyy-MM-dd_HHmmss')
       $archivePath = Join-Path $OutputDir "FullScan_$oldDate.csv"
       Move-Item -Path $csvPath -Destination $archivePath -Force
       Write-Host "[Invoke-FolderScan] Previous scan archived: $archivePath" -ForegroundColor DarkGray
+
+      if (Test-Path $metaPath) {
+        $archiveMetaPath = Join-Path $OutputDir "FullScan_$oldDate.meta.json"
+        Move-Item -Path $metaPath -Destination $archiveMetaPath -Force
+        Write-Host "[Invoke-FolderScan] Previous metadata archived: $archiveMetaPath" -ForegroundColor DarkGray
+      }
     }
 
     # ─── EXPORT CSV ───
     $FileList | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
     Write-Host "[Invoke-FolderScan] CSV exported: $csvPath" -ForegroundColor Green
+
+    $scanMeta = [PSCustomObject]@{
+      ScanRoot = $ResolvedPath
+      ScannedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+      Recursive = [bool]$Recurse
+      FileCount = $FileList.Count
+    }
+    $scanMeta | ConvertTo-Json | Set-Content -Path $metaPath -Encoding UTF8
+    Write-Host "[Invoke-FolderScan] Metadata exported: $metaPath" -ForegroundColor Green
   }
 
   # ═══════════════════════════════════════════════════════════════
@@ -280,6 +360,9 @@ function Invoke-FolderScan {
 
   # Folders & depth
   $uniqueFolders = ($FileList | Select-Object -ExpandProperty DirectoryName -Unique).Count
+  $totalFolders = if (-not $LoadLatest) {
+    (Get-ChildItem -Path $ResolvedPath -Directory -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count
+  } else { $uniqueFolders }
   $maxDepth = 0
   if (-not $LoadLatest) {
     foreach ($f in $FileList) {
@@ -463,9 +546,18 @@ $themeCss
   .qf-btn.active-filter {
     background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important;
   }
-  .chart-segment { transition: transform 0.2s, filter 0.2s; cursor: pointer; }
-  .chart-segment:hover, .chart-segment.active { opacity: 0.8; }
-  .chart-segment.active { stroke: var(--bg-card); stroke-width: 2px; transform: scale(1.05); filter: brightness(1.1); }
+  .chart-segment { transition: opacity 0.25s, transform 0.2s, filter 0.2s; cursor: pointer; }
+  .chart-segment:hover { filter: brightness(1.15); }
+  .chart-segment.active { stroke: var(--accent); stroke-width: 3px; transform: scale(1.04); filter: brightness(1.1); opacity: 1 !important; }
+  .chart-segment.dimmed { opacity: 0.3; }
+
+  /* Unified filter bar */
+  .filter-bar {
+    background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius-card);
+    padding: 1rem 1.5rem; margin-bottom: 1.5rem;
+  }
+  .filter-bar-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+  .filter-bar-sep { width: 1px; height: 20px; background: var(--border-glass); flex-shrink: 0; }
 
   /* === HEADER === */
   .header { margin-bottom: 3rem; text-align: left; position: relative; }
@@ -504,16 +596,47 @@ $themeCss
     display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;
   }
   @media (max-width: 900px) { .chart-section { grid-template-columns: 1fr; } }
+  .analysis-tabs {
+    display: inline-flex;
+    gap: 0.4rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: 999px;
+    padding: 0.35rem;
+    margin-bottom: 1.3rem;
+  }
+  .analysis-tab-btn {
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.45rem 1rem;
+    cursor: pointer;
+  }
+  .analysis-tab-btn.active {
+    background: var(--bg-secondary);
+    color: var(--accent);
+  }
+  .analysis-pane { display: none; }
+  .analysis-pane.active { display: block; }
   .chart-card {
     background: var(--bg-card); border-radius: var(--radius-card); padding: 2rem;
     border: 1px solid var(--border-glass);
   }
   .chart-card h2 { font-family: var(--font-head); font-size: 1.1rem; font-weight: 500; margin-bottom: 1.5rem; color: var(--text-primary); }
-  .chart-container { display: flex; align-items: center; justify-content: center; gap: 2rem; flex-wrap: wrap; }
-  .legend { display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.85rem; }
-  .legend-item { display: flex; align-items: center; gap: 0.8rem; color: var(--text-secondary); }
-  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-  .legend-count { color: var(--text-muted); font-size: 0.85rem; margin-left: auto; padding-left: 1rem; }
+  .chart-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
+  .chart-actions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+  .chart-card .ext-browser { margin-top: 1rem; margin-bottom: 0; }
+  .legend { display: flex; flex-direction: row; flex-wrap: wrap; gap: 0.45rem 0.6rem; font-size: 0.82rem; width: 100%; max-height: none; overflow: visible; }
+  .legend-item {
+    display: inline-flex; align-items: center; gap: 0.45rem; color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 0.15rem 0; white-space: nowrap; font-size: 0.78rem;
+  }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .legend-count { display: none; }
   .pie-tooltip {
     position: absolute; background: var(--bg-secondary); border-radius: 8px;
     padding: 0.6rem 1rem; font-size: 0.85rem; color: var(--text-primary);
@@ -616,6 +739,40 @@ $themeCss
   .qf-btn-accent { background: var(--bg-secondary); color: var(--text-primary); border: none; }
   .qf-btn-accent:hover { background: #E9EEF6; color: #0B57D0; }
   :root[style*="--bg-primary: #0E0E11"] .qf-btn-accent:hover { background: #2D2E30; color: #A8C7FA; }
+  .qf-btn-empty { opacity: 0.45; }
+  .ext-browser {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-glass);
+    border-radius: 14px;
+    padding: 0.8rem;
+    margin-bottom: 1.2rem;
+  }
+  .ext-browser-head {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 0.7rem;
+  }
+  .ext-browser-head input {
+    flex: 1;
+    padding: 0.45rem 0.9rem;
+    border-radius: 99px;
+    border: 1px solid var(--border-glass);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    outline: none;
+  }
+  .ext-browser-head input:focus { border-color: var(--accent); }
+  .ext-browser-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    max-height: 220px;
+    overflow: auto;
+    padding-right: 0.25rem;
+  }
+  .ext-browser-list .qf-btn { font-size: 0.78rem; padding: 0.35rem 0.8rem; }
 
   /* Info box */
   .info-box {
@@ -645,6 +802,10 @@ $themeCss
   .section-header h2 { margin: 0; font-family: var(--font-head); font-size: 1.1rem; font-weight: 500; cursor: pointer; }
   .section-header h2 .collapse-arrow { display: inline-block; transition: transform 0.3s; margin-right: 0.3rem; font-size: 0.8rem; }
   .section-header h2 .collapse-arrow.collapsed { transform: rotate(-90deg); }
+  .activity-section { padding: 0.8rem 1.1rem; margin-bottom: 1rem; }
+  .activity-section .section-header { margin-bottom: 0; }
+  .activity-section.activity-expanded { padding: 1.5rem 1.8rem; }
+  .activity-section.activity-expanded .section-header { margin-bottom: 0.8rem; }
   .treemap-body { overflow: hidden; transition: max-height 0.4s ease, opacity 0.3s ease; max-height: 800px; opacity: 1; }
   .treemap-body.collapsed { max-height: 0; opacity: 0; margin: 0; padding: 0; }
   #treemap-container { width: 100%; height: 600px; background: var(--bg-secondary); border-radius: 12px; }
@@ -726,7 +887,7 @@ $themeCss
 
   <!-- Header -->
   <div class="header">
-    <h1>Folder Scan Dashboard <span>&bull; AI Analysis</span></h1>
+    <h1>Folder Scan Dashboard <span>&bull; Übersicht</span></h1>
     <div class="scan-path">$ResolvedPath</div>
     <div class="scan-meta">$scanInfoText</div>
   </div>
@@ -735,7 +896,7 @@ $themeCss
   <div class="stats-grid" id="stats-grid">
     <div class="stat-card"><div class="stat-value" id="stat-files">$totalFiles</div><div class="stat-label">Dateien</div></div>
     <div class="stat-card"><div class="stat-value" id="stat-size">$totalSizeDisplay</div><div class="stat-label">Gesamtgröße</div></div>
-    <div class="stat-card"><div class="stat-value" id="stat-folders">$uniqueFolders</div><div class="stat-label">Ordner</div></div>
+    <div class="stat-card"><div class="stat-value" id="stat-folders">$uniqueFolders</div><div class="stat-label">Ordner (mit Dateien)<br><small style="opacity:0.6">$totalFolders gesamt</small></div></div>
     <div class="stat-card"><div class="stat-value" id="stat-depth">$maxDepth</div><div class="stat-label">Max. Tiefe</div></div>
     <div class="stat-card"><div class="stat-value" id="stat-conv">$convertibleCount</div><div class="stat-label">Konvertierbar</div></div>
     <div class="stat-card"><div class="stat-value" id="stat-types">$($extGroups.Count)</div><div class="stat-label">Dateitypen</div></div>
@@ -743,49 +904,92 @@ $themeCss
 
   $deltaHtml
 
-  <!-- Charts -->
-  <div class="chart-section">
-    <div class="chart-card">
-      <h2>📊 Verteilung nach Dateiendung</h2>
-      <div class="chart-container">
-        <div style="position:relative">
-          <svg id="pie-ext" width="240" height="240" viewBox="-120 -120 240 240"></svg>
-          <div class="pie-tooltip" id="tip-ext"></div>
-        </div>
-        <div class="legend" id="leg-ext"></div>
-      </div>
-    </div>
-    <div class="chart-card">
-      <h2>✅ Konvertierbarkeit</h2>
-      <div class="chart-container">
-        <div style="position:relative">
-          <svg id="pie-conv" width="200" height="200" viewBox="-100 -100 200 200"></svg>
-          <div class="pie-tooltip" id="tip-conv"></div>
-        </div>
-        <div class="legend" id="leg-conv"></div>
-      </div>
-    </div>
+  <!-- Quick Export -->
+  <div style="margin-bottom:1rem">
+    <button class="qf-btn qf-btn-accent" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📄 CSV exportieren</button>
+    <button class="qf-btn qf-btn-accent" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📊 Excel exportieren</button>
   </div>
 
-  <!-- Structure Analysis -->
-  <div class="structure-section">
+  <!-- Activity Chart -->
+  <div class="structure-section activity-section" id="activity-section">
     <div class="section-header">
-      <h2 onclick="toggleTreemap()"><span class="collapse-arrow collapsed" id="tm-arrow">▼</span> 🧱 Struktur-Analyse (Treemap)</h2>
-      <div class="toggle-group" id="tm-toggle-group" style="display:none">
-        <button class="qf-btn active" id="btn-tm-count" onclick="drawTreemap('count')">Anzahl Dateien</button>
-        <button class="qf-btn" id="btn-tm-size" onclick="drawTreemap('size')">Größe</button>
-      </div>
+      <h2 onclick="toggleActivity()"><span class="collapse-arrow collapsed" id="activity-arrow">▼</span> 📅 Datei-Aktivität (Anzahl Dateien pro Änderungsdatum)</h2>
     </div>
-    <div class="treemap-body collapsed" id="treemap-body">
-      <div id="treemap-container"></div>
-      <div class="treemap-hint">Klicke auf einen Ordner, um die Dateiliste unten auf diesen Ordner zu filtern. Doppelklick zum Zoomen.</div>
+    <div id="activity-body" data-collapsed="1" style="transition: max-height 0.35s ease, opacity 0.25s ease; max-height: 0px; opacity: 0; overflow: hidden;">
+      <div id="activity-chart" style="width:100%;height:280px"></div>
     </div>
   </div>
 
   <!-- Top 10 Biggest Files -->
-  <div class="top10-section">
+  <div class="top10-section" style="background:var(--bg-card);border-radius:var(--radius-card);padding:1.5rem 2rem;border:1px solid var(--border-glass);margin-bottom:1.5rem">
     <h2>🏋️ Top 10 größte Dateien</h2>
     <div class="top10-list" id="top10-list"></div>
+  </div>
+
+  <!-- Analysis Tabs -->
+  <div class="analysis-tabs" id="analysis-tabs">
+    <button class="analysis-tab-btn active" id="btn-pane-files" onclick="switchAnalysisPane('files')">📊 Datei-Analyse</button>
+    <button class="analysis-tab-btn" id="btn-pane-structure" onclick="switchAnalysisPane('structure')">🧱 Struktur-Analyse</button>
+  </div>
+
+  <div class="analysis-pane active" id="pane-files">
+    <!-- Charts -->
+    <div class="chart-section">
+      <div class="chart-card">
+        <h2>📊 Verteilung nach Dateiendung</h2>
+        <div class="chart-container">
+          <div style="position:relative">
+            <svg id="pie-ext" width="420" height="420" viewBox="-210 -210 420 420"></svg>
+            <div class="pie-tooltip" id="tip-ext"></div>
+          </div>
+          <div class="legend" id="leg-ext"></div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h2>✅ Konvertierbarkeit</h2>
+        <div class="chart-container">
+          <div style="position:relative">
+            <svg id="pie-conv" width="420" height="420" viewBox="-210 -210 420 420"></svg>
+            <div class="pie-tooltip" id="tip-conv"></div>
+          </div>
+          <div class="legend" id="leg-conv"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="analysis-pane" id="pane-structure">
+    <!-- Structure Analysis -->
+    <div class="structure-section">
+      <div class="section-header">
+        <h2 onclick="toggleTreemap()"><span class="collapse-arrow collapsed" id="tm-arrow">▼</span> 🧱 Struktur-Analyse</h2>
+        <div class="toggle-group" id="tm-toggle-group" style="display:none">
+          <button class="qf-btn active" id="btn-chart-treemap" onclick="switchChartType('treemap')">Treemap</button>
+          <button class="qf-btn" id="btn-chart-sunburst" onclick="switchChartType('sunburst')">Sunburst</button>
+          <span style="border-left:1px solid var(--border-glass);margin:0 4px"></span>
+          <button class="qf-btn active" id="btn-tm-count" onclick="drawTreemap('count')">Anzahl</button>
+          <button class="qf-btn" id="btn-tm-size" onclick="drawTreemap('size')">Größe</button>
+        </div>
+      </div>
+      <div class="treemap-body collapsed" id="treemap-body">
+        <div id="treemap-container"></div>
+        <div class="treemap-hint">Klicke auf einen Ordner, um die Dateiliste unten auf diesen Ordner zu filtern. Doppelklick zum Zoomen.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unified Filter Bar -->
+  <div class="filter-bar" id="filter-bar">
+    <div class="filter-bar-row" id="qf-container"></div>
+    <div class="ext-browser" id="ext-browser" data-mode="all" style="display:none;margin-top:0.8rem">
+      <div class="ext-browser-head">
+        <input id="ext-browser-search" type="text" placeholder="Dateiendung suchen (z.B. .yaml, .cs, .h)" oninput="applyExtBrowserFilter()">
+        <button class="qf-btn" onclick="selectAllVisibleExt()">Alle auswählen</button>
+        <button class="qf-btn" onclick="deselectAllVisibleExt()">Keine</button>
+        <button class="qf-btn" id="btn-ext-browser-close" onclick="toggleExtBrowser(false)">Schließen</button>
+      </div>
+      <div class="ext-browser-list" id="ext-browser-list"></div>
+    </div>
   </div>
 
   <!-- Folder Filter Indicator -->
@@ -796,10 +1000,6 @@ $themeCss
     <h2>📋 Dateiliste</h2>
     <div class="folder-search">
       <input type="text" id="folder-search-input" placeholder="🔍 Ordner filtern (z.B. Mockup-Data)..." oninput="filterByPath(this.value)">
-    </div>
-    <div class="quick-filters" id="qf-container">
-      <button class="qf-btn qf-btn-accent" onclick="filterConvertible()">✅ Nur Konvertierbare</button>
-      <button class="qf-btn qf-btn-accent" onclick="clearFilter()">✖ Filter zurücksetzen</button>
     </div>
     <table id="file-table" class="display compact" style="width:100%">
       <thead>
@@ -862,6 +1062,28 @@ const activeFilters = {
   conv: null, // null, 'Ja', 'Nein'
   folder: null // absolute folder path for treemap click filter
 };
+let currentOtherExtLabels = [];
+let extSelectionBeforeConvAuto = null;
+
+// Build set of convertible extensions from data
+var convertibleExtSet = new Set();
+(allFiles || []).forEach(function(f) { if (f.convertible && f.ext) convertibleExtSet.add(f.ext); });
+
+function buildExtStats(files) {
+  var map = {};
+  (files || []).forEach(function(f) {
+    var ext = (f && f.ext) ? f.ext : '(none)';
+    map[ext] = (map[ext] || 0) + 1;
+  });
+  return Object.keys(map).map(function(k) {
+    return { label: k, count: map[k] };
+  }).sort(function(a, b) {
+    if (b.count !== a.count) return b.count - a.count;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+const allExtStats = buildExtStats(allFiles);
 
 function applyFilters() {
   // Extension Filter (OR logic)
@@ -875,9 +1097,9 @@ function applyFilters() {
 
   // Convertible Filter
   if (activeFilters.conv) {
-    table.column(5).search(activeFilters.conv);
+    table.column(10).search(activeFilters.conv);
   } else {
-    table.column(5).search('');
+    table.column(10).search('');
   }
 
   // Folder Filter (from treemap click)
@@ -892,7 +1114,7 @@ function applyFilters() {
   updateFolderIndicator();
 }
 
-function getFilteredFiles() {
+function getFolderScopedFiles() {
   if (!activeFilters.folder) return allFiles;
   var folder = activeFilters.folder;
   return allFiles.filter(function(f) {
@@ -901,31 +1123,58 @@ function getFilteredFiles() {
   });
 }
 
+function getFilteredFiles() {
+  var scoped = getFolderScopedFiles();
+  return scoped.filter(function(f) {
+    var ext = f.ext || '(none)';
+    if (activeFilters.ext.size > 0 && !activeFilters.ext.has(ext)) return false;
+    if (activeFilters.conv === 'Ja' && !f.convertible) return false;
+    if (activeFilters.conv === 'Nein' && f.convertible) return false;
+    return true;
+  });
+}
+
 function updateVisuals() {
   var filtered = getFilteredFiles();
 
   // Update quick-filter button counts
+  var extCountScope = getFolderScopedFiles().filter(function(f) {
+    if (activeFilters.conv === 'Ja' && !f.convertible) return false;
+    if (activeFilters.conv === 'Nein' && f.convertible) return false;
+    return true;
+  });
   var extCounts = {};
   var convCount = 0;
-  filtered.forEach(function(f) {
+  extCountScope.forEach(function(f) {
     var ext = f.ext || '(none)';
     extCounts[ext] = (extCounts[ext] || 0) + 1;
+  });
+  filtered.forEach(function(f) {
     if (f.convertible) convCount++;
   });
 
   document.querySelectorAll('.qf-btn[data-ext]').forEach(function(b) {
     var ext = b.dataset.ext;
     var cnt = extCounts[ext] || 0;
-    b.textContent = ext + ' (' + cnt + ')';
-    if (activeFilters.ext.has(ext)) b.classList.add('active-filter');
-    else b.classList.remove('active-filter');
+    // Preserve color dot if present
+    var dotEl = b.querySelector('span');
+    var dotHtml = dotEl ? dotEl.outerHTML : '';
+    b.innerHTML = dotHtml + ext + ' (' + cnt + ')';
+    b.classList.toggle('active-filter', activeFilters.ext.has(ext));
+    b.classList.toggle('qf-btn-empty', cnt === 0);
   });
 
-  // Conv button
+  // Conv buttons
   var btnConv = document.getElementById('btn-conv-yes');
   if (btnConv) {
     btnConv.textContent = '\u2705 Nur Konvertierbare (' + convCount + ')';
     btnConv.classList.toggle('active-filter', activeFilters.conv === 'Ja');
+  }
+  var btnConvNo = document.getElementById('btn-conv-no');
+  if (btnConvNo) {
+    var nonConvCount = filtered.length - convCount;
+    btnConvNo.textContent = '\u274c Nur Nicht-Konvertierbare (' + nonConvCount + ')';
+    btnConvNo.classList.toggle('active-filter', activeFilters.conv === 'Nein');
   }
 
   // Update stat cards
@@ -934,17 +1183,28 @@ function updateVisuals() {
   // Update Top-10 biggest files
   try { buildTop10(); } catch(e) {}
 
-  // Update pie charts with filtered data (redraws SVG)
-  updatePieCharts(filtered);
+  // Update pie charts with FULL folder-scoped data (not ext-filtered)
+  // so the pie always shows all extensions; highlighting marks the active ones
+  var scopedFiles = getFolderScopedFiles();
+  updatePieCharts(scopedFiles);
+
+  // Activity chart uses the fully-filtered set
+  drawActivityChart(filtered);
 
   // Pie Segments highlight (AFTER redraw so classes are not wiped)
+  var hasExtFilter = activeFilters.ext.size > 0;
   document.querySelectorAll('.chart-segment[data-ext]').forEach(function(p) {
-    if (activeFilters.ext.has(p.dataset.ext)) p.classList.add('active');
-    else p.classList.remove('active');
+    var ext = p.dataset.ext;
+    var isOtherSelected = ext === 'Other' && currentOtherExtLabels.some(function(label) { return activeFilters.ext.has(label); });
+    var isActive = activeFilters.ext.has(ext) || isOtherSelected;
+    p.classList.toggle('active', isActive);
+    p.classList.toggle('dimmed', hasExtFilter && !isActive);
   });
+  var hasConvFilter = !!activeFilters.conv;
   document.querySelectorAll('.chart-segment[data-conv]').forEach(function(p) {
-    if (activeFilters.conv === p.dataset.conv) p.classList.add('active');
-    else p.classList.remove('active');
+    var isActive = activeFilters.conv === p.dataset.conv;
+    p.classList.toggle('active', isActive);
+    p.classList.toggle('dimmed', hasConvFilter && !isActive);
   });
 }
 
@@ -983,9 +1243,25 @@ function updatePieCharts(filtered) {
     extMap[ext].count++;
     extMap[ext].sizeBytes += f.sizeBytes;
   });
-  var dynExtData = Object.values(extMap).sort(function(a, b) { return b.count - a.count; });
+  
+  // Sort by count DESC
+  var sortedExts = Object.values(extMap).sort(function(a, b) { return b.count - a.count; });
   var total = filtered.length || 1;
-  dynExtData.forEach(function(d) {
+  
+  // Group Top 10 + Other
+  var top10 = sortedExts.slice(0, 10);
+  var others = sortedExts.slice(10);
+  currentOtherExtLabels = others.map(function(d) { return d.label; });
+  updateOtherExtButton();
+  applyExtBrowserFilter();
+  
+  if (others.length > 0) {
+    var otherCount = others.reduce((s, d) => s + d.count, 0);
+    var otherSize = others.reduce((s, d) => s + d.sizeBytes, 0);
+    top10.push({ label: 'Other', count: otherCount, sizeBytes: otherSize });
+  }
+
+  top10.forEach(function(d) {
     d.percent = Math.round((d.count / total) * 1000) / 10;
     d.sizeMB = (d.sizeBytes / 1048576).toFixed(2);
   });
@@ -999,25 +1275,63 @@ function updatePieCharts(filtered) {
     { label: 'Nicht konvertierbar', count: cNo, percent: Math.round((cNo / total) * 1000) / 10 }
   ];
 
-  drawPie('pie-ext','tip-ext','leg-ext', dynExtData, CC, 100, 'ext');
-  drawPie('pie-conv','tip-conv','leg-conv', dynConvData, ['#4ade80','#475569'], 80, 'conv');
+  drawPie('pie-ext','tip-ext','leg-ext', top10, CC, 180, 'ext');
+  drawPie('pie-conv','tip-conv','leg-conv', dynConvData, ['#4ade80','#475569'], 180, 'conv');
+}
+
+function scrollToTable() {
+  var el = document.getElementById('file-table');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function toggleExt(ext) {
   if (activeFilters.ext.has(ext)) activeFilters.ext.delete(ext);
   else activeFilters.ext.add(ext);
+  // If user manually changes ext selection during conv auto-mode, discard saved state
+  if (activeFilters.conv === 'Ja' && extSelectionBeforeConvAuto) {
+    extSelectionBeforeConvAuto = null;
+  }
   applyFilters();
+  scrollToTable();
 }
 
 function toggleConv(val) {
-  if (activeFilters.conv === val) activeFilters.conv = null;
-  else activeFilters.conv = val;
+  // Toggle off
+  if (activeFilters.conv === val) {
+    activeFilters.conv = null;
+    if (val === 'Ja' && extSelectionBeforeConvAuto) {
+      activeFilters.ext = new Set(extSelectionBeforeConvAuto);
+      extSelectionBeforeConvAuto = null;
+    }
+    applyFilters();
+    return;
+  }
+
+  // Switching away from auto-convertible mode restores prior manual ext-selection
+  if (activeFilters.conv === 'Ja' && extSelectionBeforeConvAuto) {
+    activeFilters.ext = new Set(extSelectionBeforeConvAuto);
+    extSelectionBeforeConvAuto = null;
+  }
+
+  activeFilters.conv = val;
+
+  // UX expectation: selecting "Nur Konvertierbare" also selects all matching extensions
+  if (val === 'Ja') {
+    extSelectionBeforeConvAuto = new Set(activeFilters.ext);
+    var convExts = new Set();
+    getFolderScopedFiles().forEach(function(f) {
+      if (f.convertible) convExts.add(f.ext || '(none)');
+    });
+    activeFilters.ext = convExts;
+  }
+
   applyFilters();
 }
 
 function clearAllFilters() {
   activeFilters.ext.clear();
   activeFilters.conv = null;
+  extSelectionBeforeConvAuto = null;
   var hadFolder = activeFilters.folder;
   activeFilters.folder = null;
   var searchInput = document.getElementById('folder-search-input');
@@ -1029,11 +1343,14 @@ function clearAllFilters() {
 }
 
 function filterByFolder(absPath) {
-  // Clicking root = show all; clicking same folder again = clear filter
-  if (!absPath || absPath === scanRoot || activeFilters.folder === absPath) {
+  var normalizedRoot = (scanRoot || '').replace(/\\\\/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+  var normalizedTarget = (absPath || '').replace(/\\\\/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+
+  // Root path clears filter. Same folder no longer toggles off (prevents accidental clear via pathbar clicks).
+  if (!normalizedTarget || normalizedTarget === normalizedRoot) {
     activeFilters.folder = null;
   } else {
-    activeFilters.folder = absPath;
+    activeFilters.folder = (absPath || '').replace(/\\\\/g, '\\').replace(/[\\/]+$/, '');
   }
   applyFilters();
   // Redraw treemap to update highlighting
@@ -1058,10 +1375,13 @@ function updateFolderIndicator() {
 
 function folderUp() {
   if (!activeFilters.folder) return;
-  var idx = activeFilters.folder.lastIndexOf('\\');
+  var current = activeFilters.folder.replace(/\\\\/g, '\\').replace(/[\\/]+$/, '');
+  var idx = current.lastIndexOf('\\');
   if (idx <= 0) { clearAllFilters(); return; }
-  var parent = activeFilters.folder.substring(0, idx);
-  if (parent.length < scanRoot.length || parent === scanRoot) {
+  var parent = current.substring(0, idx);
+  var normParent = parent.toLowerCase();
+  var normRoot = (scanRoot || '').replace(/\\\\/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+  if (!normParent || normParent.length < normRoot.length || normParent === normRoot) {
     clearAllFilters();
   } else {
     filterByFolder(parent);
@@ -1083,6 +1403,25 @@ function toggleTreemap() {
   }
 }
 
+function switchAnalysisPane(pane) {
+  var filesPane = document.getElementById('pane-files');
+  var structurePane = document.getElementById('pane-structure');
+  var btnFiles = document.getElementById('btn-pane-files');
+  var btnStructure = document.getElementById('btn-pane-structure');
+  var showFiles = pane !== 'structure';
+
+  if (filesPane) filesPane.classList.toggle('active', showFiles);
+  if (structurePane) structurePane.classList.toggle('active', !showFiles);
+  if (btnFiles) btnFiles.classList.toggle('active', showFiles);
+  if (btnStructure) btnStructure.classList.toggle('active', !showFiles);
+
+  if (!showFiles && window.fileTable && window.fileTable.columns) {
+    setTimeout(function() {
+      try { window.fileTable.columns.adjust().draw(false); } catch (e) { console.error(e); }
+    }, 80);
+  }
+}
+
 // === PIE CHART ===
 function drawPie(svgId, tipId, legId, data, colors, r, type) {
   const svg = document.getElementById(svgId);
@@ -1092,7 +1431,72 @@ function drawPie(svgId, tipId, legId, data, colors, r, type) {
   const ri = r * 0.55;
   let a = -Math.PI / 2;
   svg.innerHTML = ''; leg.innerHTML = '';
-  data.forEach((d, i) => {
+
+  if (!data || data.length === 0 || total <= 0) {
+    var strokeWidth = Math.max(10, Math.round(r * 0.18));
+    var emptyR = Math.max(8, Math.round(r * 0.72));
+    svg.innerHTML = '<circle cx="0" cy="0" r="' + emptyR + '" fill="none" stroke="rgba(127,127,127,0.35)" stroke-width="' + strokeWidth + '"></circle>' +
+      '<text x="0" y="6" text-anchor="middle" fill="rgba(127,127,127,0.85)" font-size="14">Keine Daten</text>';
+
+    const li = document.createElement('div');
+    li.className = 'legend-item';
+    li.style.cursor = 'default';
+    li.style.opacity = '0.8';
+    li.textContent = 'Keine Daten im aktuellen Filter';
+    leg.appendChild(li);
+    return;
+  }
+
+  var drawItems = data.map(function(d, i) {
+    return {
+      label: d.label,
+      count: d.count,
+      percent: d.percent,
+      sizeMB: d.sizeMB,
+      colorIndex: i
+    };
+  }).filter(function(d) { return d.count > 0; });
+
+  function handleSegmentToggle(d) {
+    if (type === 'ext') {
+      if (d.label === 'Other') { openOtherExtensions(); return; }
+      toggleExt(d.label);
+    }
+    if (type === 'conv') toggleConv(d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
+  }
+
+  function bindSegmentEvents(el, d) {
+    if (type === 'ext') el.setAttribute('data-ext', d.label);
+    if (type === 'conv') el.setAttribute('data-conv', d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
+
+    el.addEventListener('click', function() { handleSegmentToggle(d); });
+    el.addEventListener('mouseenter', function() {
+      tip.style.opacity = '1';
+      tip.innerHTML = '<strong>'+d.label+'</strong><br>'+d.count+' ('+d.percent+'%)'+(d.sizeMB!==undefined?'<br>'+d.sizeMB+' MB':'');
+    });
+    el.addEventListener('mousemove', function(e) {
+      const rect = svg.closest('.chart-container').getBoundingClientRect();
+      tip.style.left = (e.clientX-rect.left+12)+'px'; tip.style.top = (e.clientY-rect.top-8)+'px';
+    });
+    el.addEventListener('mouseleave', function() { tip.style.opacity='0'; });
+  }
+
+  if (drawItems.length === 1) {
+    var only = drawItems[0];
+    var cOnly = colors[only.colorIndex % colors.length];
+    var ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    ring.setAttribute('cx', '0');
+    ring.setAttribute('cy', '0');
+    ring.setAttribute('r', ((r + ri) / 2).toString());
+    ring.setAttribute('fill', 'none');
+    ring.setAttribute('stroke', cOnly);
+    ring.setAttribute('stroke-width', (r - ri).toString());
+    ring.setAttribute('class', 'chart-segment');
+    bindSegmentEvents(ring, only);
+    svg.appendChild(ring);
+  } else {
+    drawItems.forEach((d) => {
+      const i = d.colorIndex;
     const ang = (d.count / total) * 2 * Math.PI;
     const x1 = Math.cos(a)*r, y1 = Math.sin(a)*r, x1i = Math.cos(a)*ri, y1i = Math.sin(a)*ri;
     a += ang;
@@ -1102,70 +1506,254 @@ function drawPie(svgId, tipId, legId, data, colors, r, type) {
     p.setAttribute('d', 'M'+x1i+' '+y1i+'L'+x1+' '+y1+'A'+r+' '+r+' 0 '+la+' 1 '+x2+' '+y2+'L'+x2i+' '+y2i+'A'+ri+' '+ri+' 0 '+la+' 0 '+x1i+' '+y1i+'Z');
     p.setAttribute('fill', c);
     p.setAttribute('class', 'chart-segment');
-    if (type === 'ext') p.setAttribute('data-ext', d.label);
-    if (type === 'conv') p.setAttribute('data-conv', d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
-    
-    p.addEventListener('click', () => {
-        if (type === 'ext') toggleExt(d.label);
-        if (type === 'conv') toggleConv(d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
-    });
-
-    p.addEventListener('mouseenter', () => {
-      tip.style.opacity = '1';
-      tip.innerHTML = '<strong>'+d.label+'</strong><br>'+d.count+' ('+d.percent+'%)'+(d.sizeMB!==undefined?'<br>'+d.sizeMB+' MB':'');
-    });
-    p.addEventListener('mousemove', e => {
-      const rect = svg.closest('.chart-container').getBoundingClientRect();
-      tip.style.left = (e.clientX-rect.left+12)+'px'; tip.style.top = (e.clientY-rect.top-8)+'px';
-    });
-    p.addEventListener('mouseleave', () => { tip.style.opacity='0'; });
+    bindSegmentEvents(p, d);
     svg.appendChild(p);
-    
+  });
+  }
+
+  data.forEach((d, i) => {
+    const c = colors[i % colors.length];
     // Legend click
     const li = document.createElement('div');
     li.className = 'legend-item';
     li.style.cursor = 'pointer';
-    li.innerHTML = '<span class="legend-dot" style="background:'+c+'"></span><span>'+d.label+'</span><span class="legend-count">'+d.count+'</span>';
-    li.onclick = () => {
-        if (type === 'ext') toggleExt(d.label);
-        if (type === 'conv') toggleConv(d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
-    };
+    var convMark = (type === 'ext' && d.label !== 'Other' && convertibleExtSet.has(d.label)) ? ' ✅' : '';
+    li.innerHTML = '<span class="legend-dot" style="background:'+c+'"></span><span>'+d.label+' ('+d.count+')'+convMark+'</span><span class="legend-count">'+d.count+'</span>';
+    li.onclick = () => { handleSegmentToggle(d); };
     leg.appendChild(li);
   });
 }
 
-drawPie('pie-ext','tip-ext','leg-ext', extData, CC, 100, 'ext');
-drawPie('pie-conv','tip-conv','leg-conv', convData, ['#4ade80','#475569'], 80, 'conv');
+// === ACTIVITY CHART ===
+function drawActivityChart(files) {
+  var target = document.getElementById('activity-chart');
+  if (!target) return;
 
-// === QUICK FILTER BUTTONS ===
+  if (typeof Plotly === 'undefined') {
+    target.innerHTML = '<div style="padding:1rem;text-align:center;opacity:0.65">Aktivitäts-Chart benötigt Internet (Plotly CDN).</div>';
+    return;
+  }
+
+  var buckets = {};
+  (files || []).forEach(function(f) {
+    if (!f || !f.modified) return;
+    var key = String(f.modified).substring(0, 10); // yyyy-MM-dd
+    if (!key || key.length < 10) return;
+    buckets[key] = (buckets[key] || 0) + 1;
+  });
+
+  var days = Object.keys(buckets).sort();
+  var values = days.map(function(d) { return buckets[d]; });
+
+  if (days.length === 0) {
+    target.innerHTML = '<div style="padding:1rem;text-align:center;opacity:0.65">Keine Daten für Aktivitäts-Chart verfügbar.</div>';
+    return;
+  }
+
+  var bodyStyle = getComputedStyle(document.body);
+  var textColor = bodyStyle.getPropertyValue('--text-secondary').trim();
+  var accentColor = bodyStyle.getPropertyValue('--accent').trim() || '#4285F4';
+
+  var trace = {
+    x: days,
+    y: values,
+    type: 'bar',
+    marker: { color: accentColor },
+    hovertemplate: '%{x}<br>%{y} Dateien<extra></extra>'
+  };
+
+  var layout = {
+    margin: { t: 8, l: 40, r: 12, b: 48 },
+    paper_bgcolor: 'transparent',
+    plot_bgcolor: 'transparent',
+    font: { color: textColor },
+    xaxis: { title: 'Datum', tickangle: -35, showgrid: false },
+    yaxis: { title: 'Dateien', rangemode: 'tozero', gridcolor: 'rgba(127,127,127,0.18)' }
+  };
+
+  Plotly.newPlot(target, [trace], layout, { displayModeBar: false, responsive: true });
+}
+
+function toggleActivity() {
+  var body = document.getElementById('activity-body');
+  var arrow = document.getElementById('activity-arrow');
+  var section = document.getElementById('activity-section');
+  if (!body) return;
+
+  var isCollapsed = body.getAttribute('data-collapsed') === '1';
+  if (isCollapsed) {
+    body.style.maxHeight = '460px';
+    body.style.opacity = '1';
+    body.setAttribute('data-collapsed', '0');
+    if (arrow) arrow.classList.remove('collapsed');
+    if (section) section.classList.add('activity-expanded');
+  } else {
+    body.style.maxHeight = '0px';
+    body.style.opacity = '0';
+    body.setAttribute('data-collapsed', '1');
+    if (arrow) arrow.classList.add('collapsed');
+    if (section) section.classList.remove('activity-expanded');
+  }
+}
+
+function toggleExtBrowser(forceOpen, mode) {
+  var panel = document.getElementById('ext-browser');
+  var search = document.getElementById('ext-browser-search');
+  if (!panel) return;
+
+  if (mode) {
+    panel.setAttribute('data-mode', mode);
+    if (search) search.value = '';
+  }
+
+  var currentlyOpen = panel.style.display !== 'none';
+  var shouldOpen = (typeof forceOpen === 'boolean') ? forceOpen : !currentlyOpen;
+  panel.style.display = shouldOpen ? 'block' : 'none';
+
+  if (shouldOpen) {
+    applyExtBrowserFilter();
+  }
+}
+
+function applyExtBrowserFilter() {
+  var panel = document.getElementById('ext-browser');
+  var list = document.getElementById('ext-browser-list');
+  var search = document.getElementById('ext-browser-search');
+  if (!panel || !list) return;
+
+  var mode = panel.getAttribute('data-mode') || 'all';
+  var query = search ? search.value.trim().toLowerCase() : '';
+  var otherMap = {};
+  currentOtherExtLabels.forEach(function(ext) { otherMap[String(ext).toLowerCase()] = true; });
+
+  list.querySelectorAll('.qf-btn[data-ext]').forEach(function(btn) {
+    var ext = btn.dataset.ext || '';
+    var extLower = ext.toLowerCase();
+    var inMode = (mode !== 'other') || !!otherMap[extLower];
+    var inSearch = (query.length === 0) || (extLower.indexOf(query) >= 0);
+    btn.style.display = (inMode && inSearch) ? '' : 'none';
+  });
+}
+
+function selectAllVisibleExt() {
+  var list = document.getElementById('ext-browser-list');
+  if (!list) return;
+  list.querySelectorAll('.qf-btn[data-ext]').forEach(function(btn) {
+    if (btn.style.display !== 'none' && btn.dataset.ext) {
+      activeFilters.ext.add(btn.dataset.ext);
+    }
+  });
+  if (activeFilters.conv === 'Ja' && extSelectionBeforeConvAuto) extSelectionBeforeConvAuto = null;
+  applyFilters();
+}
+
+function deselectAllVisibleExt() {
+  var list = document.getElementById('ext-browser-list');
+  if (!list) return;
+  list.querySelectorAll('.qf-btn[data-ext]').forEach(function(btn) {
+    if (btn.style.display !== 'none' && btn.dataset.ext) {
+      activeFilters.ext.delete(btn.dataset.ext);
+    }
+  });
+  applyFilters();
+}
+
+function openOtherExtensions() {
+  toggleExtBrowser(true, 'other');
+}
+
+function updateOtherExtButton() {
+  var count = currentOtherExtLabels.length;
+  ['btn-show-other-ext'].forEach(function(id) {
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    btn.textContent = '🧩 Other anzeigen (' + count + ')';
+    btn.style.display = count > 0 ? '' : 'none';
+  });
+}
+
+drawPie('pie-ext','tip-ext','leg-ext', extData, CC, 180, 'ext');
+drawPie('pie-conv','tip-conv','leg-conv', convData, ['#4ade80','#475569'], 180, 'conv');
+
+// === UNIFIED FILTER BUTTONS ===
 (function(){
   const c = document.getElementById('qf-container');
-  c.innerHTML = ''; // Clear static obsolete buttons
-  
+  const extList = document.getElementById('ext-browser-list');
+  c.innerHTML = '';
+
   // Reset Button
   const btnReset = document.createElement('button');
   btnReset.className = 'qf-btn qf-btn-accent';
-  btnReset.textContent = '✖ Filter zurücksetzen';
+  btnReset.textContent = '\u2716 Filter zur\u00fccksetzen';
   btnReset.onclick = clearAllFilters;
   c.appendChild(btnReset);
 
-  // Add Conv Button
+  // Conv Button
   const btnConv = document.createElement('button');
   btnConv.className = 'qf-btn qf-btn-accent'; 
   btnConv.id = 'btn-conv-yes';
-  btnConv.textContent = '✅ Nur Konvertierbare';
+  btnConv.textContent = '\u2705 Nur Konvertierbare';
   btnConv.onclick = () => toggleConv('Ja');
   c.appendChild(btnConv);
 
-  const topExts = extData.filter(d => d.label !== 'Other').slice(0, 10);
-  topExts.forEach(d => {
+  const btnConvNo = document.createElement('button');
+  btnConvNo.className = 'qf-btn qf-btn-accent';
+  btnConvNo.id = 'btn-conv-no';
+  btnConvNo.textContent = '\u274c Nur Nicht-Konvertierbare';
+  btnConvNo.onclick = () => toggleConv('Nein');
+  c.appendChild(btnConvNo);
+
+  // Separator
+  var sep = document.createElement('span');
+  sep.className = 'filter-bar-sep';
+  c.appendChild(sep);
+
+  // Top ext buttons with color dots
+  const topExts = allExtStats.slice(0, 10);
+  topExts.forEach((d, i) => {
     const b = document.createElement('button');
-    b.className = 'qf-btn'; 
+    b.className = 'qf-btn';
     b.dataset.ext = d.label;
-    b.textContent = d.label + ' (' + d.count + ')';
+    var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + CC[i % CC.length] + ';margin-right:4px;vertical-align:middle"></span>';
+    b.innerHTML = dot + d.label + ' (' + d.count + ')';
     b.addEventListener('click', () => toggleExt(d.label));
     c.appendChild(b);
   });
+
+  // Separator before Other/Alle
+  var sep2 = document.createElement('span');
+  sep2.className = 'filter-bar-sep';
+  c.appendChild(sep2);
+
+  const btnAllExt = document.createElement('button');
+  btnAllExt.className = 'qf-btn';
+  btnAllExt.textContent = '\ud83e\udde9 Alle Endungen';
+  btnAllExt.onclick = () => toggleExtBrowser(true, 'all');
+  c.appendChild(btnAllExt);
+
+  const btnOtherExt = document.createElement('button');
+  btnOtherExt.className = 'qf-btn';
+  btnOtherExt.id = 'btn-show-other-ext';
+  btnOtherExt.textContent = '\ud83e\udde9 Other anzeigen';
+  btnOtherExt.onclick = () => openOtherExtensions();
+  c.appendChild(btnOtherExt);
+
+  // Ext browser list (all extensions)
+  if (extList) {
+    extList.innerHTML = '';
+    allExtStats.forEach((d, i) => {
+      const b = document.createElement('button');
+      b.className = 'qf-btn';
+      b.dataset.ext = d.label;
+      var dotColor = i < 10 ? CC[i % CC.length] : '#888';
+      var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';margin-right:4px;vertical-align:middle"></span>';
+      b.innerHTML = dot + d.label + ' (' + d.count + ')';
+      b.addEventListener('click', () => toggleExt(d.label));
+      extList.appendChild(b);
+    });
+  }
+
+  updateOtherExtButton();
 })();
 
 // === FORMAT HELPERS ===
@@ -1226,7 +1814,21 @@ const table = new DataTable('#file-table', {
     {
       data: 'name',
       title: 'Name',
-      render: function(data) { return '<span class="cell-name" title="'+escH(data)+'">'+escH(data)+'</span>'; }
+      render: function(data, type, row) { 
+        var icon = '📄';
+        var ext = row.ext ? row.ext.toLowerCase() : '';
+        if (['.jpg','.png','.gif','.svg','.webp'].includes(ext)) icon = '🖼️';
+        else if (['.mp4','.mov','.avi','.mkv'].includes(ext)) icon = '🎬';
+        else if (['.mp3','.wav','.flac'].includes(ext)) icon = '🎵';
+        else if (['.zip','.rar','.7z','.tar','.gz'].includes(ext)) icon = '📦';
+        else if (['.exe','.msi','.bat','.ps1','.sh'].includes(ext)) icon = '⚙️';
+        else if (['.pdf'].includes(ext)) icon = '📕';
+        else if (['.docx','.doc','.txt','.md'].includes(ext)) icon = '📝';
+        else if (['.xlsx','.xls','.csv'].includes(ext)) icon = '📊';
+        else if (['.html','.css','.js','.json','.xml','.yaml'].includes(ext)) icon = '💻';
+        
+        return '<span class="cell-name" title="'+escH(data)+'">'+icon+' '+escH(data)+'</span>'; 
+      }
     },
     {
       data: 'ext',
@@ -1266,7 +1868,7 @@ const table = new DataTable('#file-table', {
     { data: 'sizeMB', title: 'MB', visible: false, render: DataTable.render.number('.', ',', 2, '', ' MB') },
     
     { data: 'created', title: 'Erstellt', visible: false },
-    { data: 'modified', title: 'Geändert' },
+    { data: 'modified', title: 'Geändert', render: function(data) { return '<span style="white-space:nowrap">' + escH(data) + '</span>'; } },
     
     { 
       data: 'readOnly', title: '🔒', visible: false,
@@ -1312,6 +1914,15 @@ const table = new DataTable('#file-table', {
     buttons: { copy: '📋 Copy', csv: '📄 CSV', excel: '📊 Excel', print: '🖨️ Print' }
   }
 });
+
+window.fileTable = table;
+
+function quickExportCSV() {
+  try { table.button('.buttons-csv').trigger(); } catch(e) { console.error('CSV export failed:', e); }
+}
+function quickExportExcel() {
+  try { table.button('.buttons-excel').trigger(); } catch(e) { console.error('Excel export failed:', e); }
+}
 
 
 
@@ -1372,12 +1983,22 @@ function buildTreemapData(metric) {
   return { ids: ids, labels: labels, parents: parents, values: values, text: text };
 }
 
+// === CHART SWITCHER (Treemap/Sunburst) ===
+var currentChartType = 'treemap'; // 'treemap' or 'sunburst'
+
+function switchChartType(type) {
+  currentChartType = type;
+  document.getElementById('btn-chart-treemap').classList.toggle('active', type === 'treemap');
+  document.getElementById('btn-chart-sunburst').classList.toggle('active', type === 'sunburst');
+  drawTreemap(currentTreemapMetric); // Re-draws with current type
+}
+
 function drawTreemap(metric) {
   const container = document.getElementById('treemap-container');
   if (!container) return;
 
   if (typeof Plotly === 'undefined') {
-    container.innerHTML = '<div style="padding:2rem;text-align:center;opacity:0.6">Treemap needs internet (Plotly CDN).</div>';
+    container.innerHTML = '<div style="padding:2rem;text-align:center;opacity:0.6">Charts need internet (Plotly CDN).</div>';
     return;
   }
 
@@ -1404,9 +2025,13 @@ function drawTreemap(metric) {
     lineWidths = data.ids.map(function(id) { return id === af ? 3 : 1; });
     lineColors = data.ids.map(function(id) { return id === af ? '#4285F4' : bgCard; });
   }
+  
+  // Colorscale logic
+  var colorscale = metric === 'size' ? 'Blues' : 'Greens';
+  if (currentChartType === 'sunburst') colorscale = 'Viridis';
 
   const trace = {
-    type: 'treemap',
+    type: currentChartType,
     ids: data.ids,
     labels: data.labels,
     parents: data.parents,
@@ -1417,14 +2042,13 @@ function drawTreemap(metric) {
     branchvalues: 'remainder',
     marker: {
       colors: markerColors,
-      colorscale: metric === 'size' ? 'Blues' : 'Greens',
+      colorscale: colorscale,
       showscale: false,
       line: { width: lineWidths, color: lineColors }
     },
-    pathbar: { visible: true, thickness: 36, textfont: { size: 14 } },
-    tiling: { packing: 'squarify' }
+    pathbar: { visible: true, thickness: 36, textfont: { size: 14 } }
   };
-
+  
   const layout = {
     margin: { t: 44, l: 0, r: 0, b: 0 },
     paper_bgcolor: 'transparent',
@@ -1432,7 +2056,6 @@ function drawTreemap(metric) {
   };
 
   Plotly.newPlot('treemap-container', [trace], layout).then(function() {
-    // Click handler: filter DataTable by clicked folder
     container.on('plotly_click', function(eventData) {
       if (eventData && eventData.points && eventData.points.length > 0) {
         var clickedId = eventData.points[0].id;
@@ -1488,11 +2111,25 @@ function checkOffline() {
 
 // Initial draw
 jQuery(document).ready(function() {
+  var activityBody = document.getElementById('activity-body');
+  var activityArrow = document.getElementById('activity-arrow');
+  var activitySection = document.getElementById('activity-section');
+  if (activityBody && !activityBody.getAttribute('data-collapsed')) {
+    activityBody.setAttribute('data-collapsed', '1');
+  }
+  if (activityBody && activityBody.getAttribute('data-collapsed') === '1') {
+    activityBody.style.maxHeight = '0px';
+    activityBody.style.opacity = '0';
+    if (activityArrow) activityArrow.classList.add('collapsed');
+    if (activitySection) activitySection.classList.remove('activity-expanded');
+  }
+
   try {
     if (typeof updateVisuals === 'function') updateVisuals();
   } catch (e) { console.error('UpdateVisuals Error:', e); }
 
   try { buildTop10(); } catch(e) { console.error('Top10 Error:', e); }
+  try { switchAnalysisPane('files'); } catch(e) {}
   try { checkOffline(); } catch(e) {}
 });
 
