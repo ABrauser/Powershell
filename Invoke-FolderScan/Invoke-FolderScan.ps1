@@ -911,9 +911,10 @@ $themeCss
   $deltaHtml
 
   <!-- Quick Export -->
-  <div style="margin-bottom:1rem">
+  <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
     <button class="qf-btn qf-btn-accent" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📄 CSV exportieren</button>
     <button class="qf-btn qf-btn-accent" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.9rem;padding:0.5rem 1.4rem">📊 Excel exportieren</button>
+    <button class="qf-btn" id="btn-pipeline-csv" onclick="exportPipelineCSV()" style="font-size:0.9rem;padding:0.5rem 1.4rem" title="Maschinenlesbare CSV ohne Formatierung – optimal für Ducling/Pipeline-Verarbeitung">⚙️ Pipeline CSV</button>
   </div>
 
   <!-- Activity Chart -->
@@ -1821,6 +1822,7 @@ const table = new DataTable('#file-table', {
       data: 'name',
       title: 'Name',
       render: function(data, type, row) { 
+        if (type !== 'display') return data;
         var icon = '📄';
         var ext = row.ext ? row.ext.toLowerCase() : '';
         if (['.jpg','.png','.gif','.svg','.webp'].includes(ext)) icon = '🖼️';
@@ -1839,14 +1841,14 @@ const table = new DataTable('#file-table', {
     {
       data: 'ext',
       title: 'Typ',
-      render: function(data) { return '<span class="cell-ext">'+escH(data)+'</span>'; }
+      render: function(data, type) { if (type !== 'display') return data; return '<span class="cell-ext">'+escH(data)+'</span>'; }
     },
     {
       data: 'dir',
       title: 'Verzeichnis',
-      render: function(data) {
-        // Fix double backslashes for display
+      render: function(data, type) {
         const cleanPath = data.replace(/\\\\/g, '\\');
+        if (type !== 'display') return cleanPath;
         return '<div class="path-cell-inner" title="'+escH(cleanPath)+'">'+escH(cleanPath)+'</div>';
       }
     },
@@ -1854,8 +1856,9 @@ const table = new DataTable('#file-table', {
       data: 'fullPath',
       title: 'Vollst. Pfad',
       visible: false,
-      render: function(data) {
+      render: function(data, type) {
         const cleanPath = data.replace(/\\\\/g, '\\');
+        if (type !== 'display') return cleanPath;
         return '<div class="path-cell-inner" title="'+escH(cleanPath)+'">'+escH(cleanPath)+'</div>';
       }
     },
@@ -1884,14 +1887,16 @@ const table = new DataTable('#file-table', {
     {
       data: 'convertible',
       title: 'Konv.',
-      render: function(data) {
+      render: function(data, type) {
+        if (type !== 'display') return data ? 'Ja' : 'Nein';
         return data ? '<span class="badge badge-yes">Ja</span>' : '<span class="badge badge-no">Nein</span>';
       }
     },
     {
       data: 'status',
       title: 'Status',
-      render: function(data) {
+      render: function(data, type) {
+        if (type !== 'display') return data || '';
         if (data === 'new') return '<span class="badge badge-new">🟢 Neu</span>';
         if (data === 'modified') return '<span class="badge badge-modified">🟡 Geändert</span>';
         return '';
@@ -1929,6 +1934,45 @@ function quickExportCSV() {
 }
 function quickExportExcel() {
   try { table.button('.buttons-excel').trigger(); } catch(e) { console.error('Excel export failed:', e); }
+}
+
+function exportPipelineCSV() {
+  var filtered = getFilteredFiles();
+  if (filtered.length === 0) { alert('Keine Dateien im aktuellen Filter.'); return; }
+
+  var cols = ['Name','Extension','FullPath','DirectoryName','SizeBytes','SizeKB','SizeMB','CreationTime','LastWriteTime','IsReadOnly','IsConvertible','Status'];
+  var rows = [cols.join(',')];
+
+  filtered.forEach(function(f) {
+    var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : '';
+    var fp = f.fullPath ? f.fullPath.replace(/\\\\/g, '\\') : '';
+    var line = [
+      '"' + (f.name || '').replace(/"/g, '""') + '"',
+      '"' + (f.ext || '') + '"',
+      '"' + fp.replace(/"/g, '""') + '"',
+      '"' + dir.replace(/"/g, '""') + '"',
+      f.sizeBytes || 0,
+      f.sizeKB || 0,
+      f.sizeMB || 0,
+      '"' + (f.created || '') + '"',
+      '"' + (f.modified || '') + '"',
+      f.readOnly ? 'True' : 'False',
+      f.convertible ? 'True' : 'False',
+      '"' + (f.status || 'unchanged') + '"'
+    ];
+    rows.push(line.join(','));
+  });
+
+  var csv = '\uFEFF' + rows.join('\r\n');
+  var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'FolderScan_Pipeline.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 
