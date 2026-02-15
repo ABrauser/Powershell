@@ -328,11 +328,11 @@ function Invoke-FolderScan {
     Write-Host "[Invoke-FolderScan] CSV exported: $csvPath" -ForegroundColor Green
 
     $scanMeta = [PSCustomObject]@{
-      ScanRoot = $ResolvedPath
-      ScannedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-      Recursive = [bool]$Recurse
-      FileCount = $FileList.Count
-      StagingPath = if ($StagingPath) { $StagingPath } else { $null }
+      ScanRoot     = $ResolvedPath
+      ScannedAt    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+      Recursive    = [bool]$Recurse
+      FileCount    = $FileList.Count
+      StagingPath  = if ($StagingPath) { $StagingPath } else { $null }
       ErgebnisPath = if ($ErgebnisPath) { $ErgebnisPath } else { $null }
     }
     $scanMeta | ConvertTo-Json | Set-Content -Path $metaPath -Encoding UTF8
@@ -347,9 +347,10 @@ function Invoke-FolderScan {
     if (Test-Path $metaPath) {
       try {
         $savedMeta = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($savedMeta.StagingPath)  { $StagingPath  = $savedMeta.StagingPath }
+        if ($savedMeta.StagingPath) { $StagingPath = $savedMeta.StagingPath }
         if ($savedMeta.ErgebnisPath) { $ErgebnisPath = $savedMeta.ErgebnisPath }
-      } catch {}
+      }
+      catch {}
     }
   }
 
@@ -360,7 +361,7 @@ function Invoke-FolderScan {
     $hasPipeline = $true
     $scanRootNorm = $ResolvedPath.TrimEnd('\')
 
-    if ($StagingPath)  { Write-Host "[Invoke-FolderScan] Staging:  $StagingPath" -ForegroundColor Cyan }
+    if ($StagingPath) { Write-Host "[Invoke-FolderScan] Staging:  $StagingPath" -ForegroundColor Cyan }
     if ($ErgebnisPath) { Write-Host "[Invoke-FolderScan] Ergebnis: $ErgebnisPath" -ForegroundColor Cyan }
 
     $pipelineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -369,7 +370,8 @@ function Invoke-FolderScan {
       $relativePath = ''
       if ($f.FullPath.StartsWith($scanRootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
         $relativePath = $f.FullPath.Substring($scanRootNorm.Length).TrimStart('\')
-      } else {
+      }
+      else {
         $relativePath = $f.Name
       }
 
@@ -399,7 +401,8 @@ function Invoke-FolderScan {
 
     $pipelineStopwatch.Stop()
     Write-Host "[Invoke-FolderScan] Pipeline status: $($pipelineStats.offen) offen, $($pipelineStats.kopiert) kopiert, $($pipelineStats.veredelt) veredelt ($([math]::Round($pipelineStopwatch.Elapsed.TotalSeconds, 2))s)" -ForegroundColor Green
-  } else {
+  }
+  else {
     # No pipeline paths: set empty status
     foreach ($f in $FileList) {
       $f | Add-Member -NotePropertyName 'PipelineStatus' -NotePropertyValue '' -Force
@@ -463,7 +466,8 @@ function Invoke-FolderScan {
   $uniqueFolders = ($FileList | Select-Object -ExpandProperty DirectoryName -Unique).Count
   $totalFolders = if (-not $LoadLatest) {
     (Get-ChildItem -Path $ResolvedPath -Directory -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count
-  } else { $uniqueFolders }
+  }
+  else { $uniqueFolders }
   $maxDepth = 0
   if (-not $LoadLatest) {
     foreach ($f in $FileList) {
@@ -1259,6 +1263,8 @@ const SCAN_ROOT = "$($ResolvedPath -replace '\\', '\\\\')";
 const scanRoot = SCAN_ROOT.replace(/\\\\/g, '\\');
 const CSV_PATH = "$($csvPath -replace '\\', '\\\\')";
 const csvPath = CSV_PATH.replace(/\\\\/g, '\\');
+const SCRIPT_ROOT = "$($PSScriptRoot -replace '\\', '\\\\')";
+const scriptRoot = SCRIPT_ROOT.replace(/\\\\/g, '\\');
 const HAS_PIPELINE = $(if ($hasPipeline) { 'true' } else { 'false' });
 const STAGING_PATH = "$(if ($StagingPath) { $StagingPath -replace '\\', '\\\\' } else { '' })";
 const stagingPath = STAGING_PATH.replace(/\\\\/g, '\\');
@@ -2349,7 +2355,7 @@ function updateCopyCommand() {
   if (!lastPipelineCsvFullPath) return;
   var dest = document.getElementById('cmd-dest').value || 'D:\\Staging';
   var whatIf = document.getElementById('cmd-whatif').checked;
-  var scriptDir = csvPath.replace(/[^\\]+$/, '');
+  var scriptDir = scriptRoot.replace(/[\\\/]+$/, '') + '\\';
 
   var cmd = '. "' + scriptDir + 'Copy-ScannedFiles.ps1"\n';
   cmd += 'Copy-ScannedFiles -CsvPath "' + lastPipelineCsvFullPath + '" -Destination "' + dest + '"';
