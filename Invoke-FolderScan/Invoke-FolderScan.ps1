@@ -1136,6 +1136,30 @@ $themeCss
     </div>
   </div>
 
+  <!-- Global Folder Selection -->
+  <details id="gf-panel" style="background:var(--bg-card);border-radius:var(--radius-card);padding:0;margin-bottom:1.5rem;border:1px solid var(--border-glass)">
+    <summary style="padding:1rem 1.5rem;cursor:pointer;font-weight:600;font-size:0.95rem;list-style:none;display:flex;align-items:center;gap:0.6rem;user-select:none">
+      <span style="transition:transform 0.2s;display:inline-block" id="gf-arrow">&#9654;</span>
+      &#128193; Ordner-Auswahl
+      <span id="gf-summary-badge" style="font-weight:400;font-size:0.78rem;color:var(--text-muted);margin-left:0.5rem">(alle Ordner)</span>
+    </summary>
+    <div style="padding:0 1.5rem 1.2rem 1.5rem">
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.8rem;flex-wrap:wrap">
+        <button class="qf-btn" id="gf-btn-all" onclick="gfSelectAll()" style="font-size:0.78rem;padding:0.3rem 0.8rem">&#10004; Alle</button>
+        <button class="qf-btn" id="gf-btn-none" onclick="gfSelectNone()" style="font-size:0.78rem;padding:0.3rem 0.8rem">&#10006; Keine</button>
+        <button class="qf-btn" id="gf-btn-conv" onclick="gfSelectConvertible()" style="font-size:0.78rem;padding:0.3rem 0.8rem">&#9989; Nur konvertierbare</button>
+        <input type="text" id="gf-search" placeholder="Ordner suchen..." style="flex:1;min-width:150px;padding:0.35rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem" oninput="gfFilterTree(this.value)">
+      </div>
+      <div id="gf-folder-tree" style="max-height:350px;overflow-y:auto;border:1px solid var(--border-glass);border-radius:8px;padding:0.5rem;background:var(--bg-secondary)"></div>
+      <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);display:flex;gap:1.2rem;flex-wrap:wrap">
+        <span>Ordner: <strong id="gf-sum-folders">0</strong></span>
+        <span>Dateien: <strong id="gf-sum-files">0</strong></span>
+        <span>Gr&ouml;&szlig;e: <strong id="gf-sum-size">0</strong></span>
+        <span>(<strong id="gf-sum-pct">100</strong>% aller Dateien)</span>
+      </div>
+    </div>
+  </details>
+
   <!-- Unified Filter Bar -->
   <div class="filter-bar" id="filter-bar">
     <div class="filter-bar-row" id="qf-container"></div>
@@ -1517,9 +1541,14 @@ function applyFilters() {
 }
 
 function getFolderScopedFiles() {
-  if (!activeFilters.folder) return allFiles;
+  var base = allFiles;
+  // Apply global folder selection first
+  if (!gfAllSelected) {
+    base = base.filter(function(f) { return gfIsFileIncluded(f); });
+  }
+  if (!activeFilters.folder) return base;
   var folder = activeFilters.folder;
-  return allFiles.filter(function(f) {
+  return base.filter(function(f) {
     var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : '';
     return dir === folder || dir.indexOf(folder + '\\') === 0;
   });
@@ -2745,6 +2774,277 @@ function checkOffline() {
   }
 }
 
+// === GLOBAL FOLDER SELECTION ===
+var gfSelectedFolders = new Set();
+var gfAllSelected = true;
+
+function gfBuildTree() {
+  if (!dlTreeData) return;
+  var container = document.getElementById('gf-folder-tree');
+  if (!container) return;
+  container.innerHTML = '';
+  container.appendChild(gfCreateNode(scanRoot, true));
+  gfSelectAll();
+}
+
+function gfCreateNode(path, isRoot) {
+  var node = dlTreeData[path];
+  if (!node) return document.createDocumentFragment();
+  var childKeys = Object.keys(node.children).sort();
+  var hasChildren = childKeys.length > 0;
+
+  var div = document.createElement('div');
+  div.className = 'ft-node' + (isRoot ? ' ft-node-root' : '');
+  div.dataset.path = path;
+
+  var row = document.createElement('div');
+  row.className = 'ft-row';
+
+  var toggle = document.createElement('span');
+  toggle.className = 'ft-toggle' + (hasChildren ? '' : ' empty');
+  toggle.textContent = hasChildren ? '\u25B6' : '';
+  toggle.onclick = function(e) { e.stopPropagation(); gfToggleExpand(div); };
+  row.appendChild(toggle);
+
+  var cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'gf-cb';
+  cb.dataset.path = path;
+  cb.checked = true;
+  cb.onchange = function() { gfOnCheck(path, cb.checked); };
+  row.appendChild(cb);
+
+  var label = document.createElement('span');
+  label.className = 'ft-label';
+  label.textContent = node.name;
+  label.onclick = function() { if (hasChildren) gfToggleExpand(div); };
+  row.appendChild(label);
+
+  var count = document.createElement('span');
+  count.className = 'ft-count';
+  count.textContent = node.totalFiles + ' Dateien \u00B7 ' + fmtSize(node.totalSize);
+  row.appendChild(count);
+
+  div.appendChild(row);
+
+  if (hasChildren) {
+    var childDiv = document.createElement('div');
+    childDiv.className = 'ft-children';
+    childDiv.dataset.loaded = '0';
+    div.appendChild(childDiv);
+  }
+  return div;
+}
+
+function gfToggleExpand(nodeDiv) {
+  var childDiv = nodeDiv.querySelector(':scope > .ft-children');
+  if (!childDiv) return;
+  var isExpanded = childDiv.classList.contains('expanded');
+  var toggle = nodeDiv.querySelector(':scope > .ft-row > .ft-toggle');
+
+  if (isExpanded) {
+    childDiv.classList.remove('expanded');
+    if (toggle) toggle.textContent = '\u25B6';
+  } else {
+    if (childDiv.dataset.loaded === '0') {
+      var path = nodeDiv.dataset.path;
+      var node = dlTreeData[path];
+      if (node) {
+        Object.keys(node.children).sort().forEach(function(ck) {
+          childDiv.appendChild(gfCreateNode(ck, false));
+        });
+      }
+      childDiv.dataset.loaded = '1';
+      gfApplyCheckState(childDiv);
+    }
+    childDiv.classList.add('expanded');
+    if (toggle) toggle.textContent = '\u25BC';
+  }
+}
+
+function gfOnCheck(path, checked) {
+  function setDesc(p, val) {
+    if (val) gfSelectedFolders.add(p); else gfSelectedFolders.delete(p);
+    var n = dlTreeData[p];
+    if (n) Object.keys(n.children).forEach(function(ck) { setDesc(ck, val); });
+  }
+  setDesc(path, checked);
+  gfBubbleUp(path);
+  gfRefreshAllCbs();
+  gfUpdateSummary();
+  gfClearBtnActive();
+  applyFilters();
+}
+
+function gfBubbleUp(path) {
+  var current = path;
+  while (true) {
+    var idx = current.lastIndexOf('\\');
+    if (idx <= 0) break;
+    var parent = current.substring(0, idx);
+    if (!dlTreeData[parent]) break;
+    var childKeys = Object.keys(dlTreeData[parent].children);
+    var allChecked = childKeys.every(function(ck) { return gfIsFullyChecked(ck); });
+    if (allChecked) gfSelectedFolders.add(parent); else gfSelectedFolders.delete(parent);
+    current = parent;
+  }
+}
+
+function gfIsFullyChecked(path) {
+  if (!gfSelectedFolders.has(path)) return false;
+  var node = dlTreeData[path];
+  if (!node) return false;
+  return Object.keys(node.children).every(function(ck) { return gfIsFullyChecked(ck); });
+}
+
+function gfIsIndet(path) {
+  var node = dlTreeData[path];
+  if (!node) return false;
+  var ck = Object.keys(node.children);
+  if (ck.length === 0) return false;
+  var hasC = false, hasU = false;
+  function walk(p) {
+    if (gfSelectedFolders.has(p)) hasC = true; else hasU = true;
+    var n = dlTreeData[p];
+    if (n) Object.keys(n.children).forEach(walk);
+  }
+  ck.forEach(walk);
+  return hasC && hasU;
+}
+
+function gfRefreshAllCbs() {
+  document.querySelectorAll('#gf-folder-tree .gf-cb').forEach(function(cb) {
+    var p = cb.dataset.path;
+    cb.checked = gfSelectedFolders.has(p);
+    cb.indeterminate = gfIsIndet(p);
+  });
+}
+
+function gfApplyCheckState(container) {
+  container.querySelectorAll('.gf-cb').forEach(function(cb) {
+    var p = cb.dataset.path;
+    cb.checked = gfSelectedFolders.has(p);
+    cb.indeterminate = gfIsIndet(p);
+  });
+}
+
+function gfClearBtnActive() {
+  ['gf-btn-all','gf-btn-none','gf-btn-conv'].forEach(function(id) {
+    var b = document.getElementById(id);
+    if (b) b.classList.remove('active');
+  });
+  gfAllSelected = false;
+}
+
+function gfSelectAll() {
+  if (!dlTreeData) return;
+  Object.keys(dlTreeData).forEach(function(p) { gfSelectedFolders.add(p); });
+  gfRefreshAllCbs();
+  gfUpdateSummary();
+  gfAllSelected = true;
+  var b = document.getElementById('gf-btn-all');
+  if (b) { gfClearBtnActive(); b.classList.add('active'); }
+  gfAllSelected = true;
+  applyFilters();
+}
+
+function gfSelectNone() {
+  gfSelectedFolders.clear();
+  gfRefreshAllCbs();
+  gfUpdateSummary();
+  gfClearBtnActive();
+  var b = document.getElementById('gf-btn-none');
+  if (b) b.classList.add('active');
+  gfAllSelected = false;
+  applyFilters();
+}
+
+function gfSelectConvertible() {
+  if (!dlTreeData) return;
+  gfSelectedFolders.clear();
+  Object.keys(dlTreeData).forEach(function(p) {
+    if (dlTreeData[p].totalConv > 0) gfSelectedFolders.add(p);
+  });
+  gfRefreshAllCbs();
+  gfUpdateSummary();
+  gfClearBtnActive();
+  var b = document.getElementById('gf-btn-conv');
+  if (b) b.classList.add('active');
+  gfAllSelected = false;
+  applyFilters();
+}
+
+function gfFilterTree(query) {
+  query = (query || '').toLowerCase();
+  document.querySelectorAll('#gf-folder-tree .ft-node').forEach(function(node) {
+    var path = (node.dataset.path || '').toLowerCase();
+    var label = node.querySelector('.ft-label');
+    var name = label ? label.textContent.toLowerCase() : '';
+    node.style.display = (!query || path.indexOf(query) >= 0 || name.indexOf(query) >= 0) ? '' : 'none';
+  });
+}
+
+function gfUpdateSummary() {
+  if (!dlTreeData) return;
+  var totalFiles = 0, totalSize = 0, folderCount = 0;
+  var allTotal = allFiles ? allFiles.length : 0;
+
+  gfSelectedFolders.forEach(function(p) {
+    var node = dlTreeData[p];
+    if (node) { totalFiles += node.fileCount; totalSize += node.sizeBytes; folderCount++; }
+  });
+
+  var pct = allTotal > 0 ? Math.round((totalFiles / allTotal) * 100) : 0;
+  var elF = document.getElementById('gf-sum-folders');
+  var elFi = document.getElementById('gf-sum-files');
+  var elS = document.getElementById('gf-sum-size');
+  var elP = document.getElementById('gf-sum-pct');
+
+  if (elF) elF.textContent = folderCount;
+  if (elFi) elFi.textContent = totalFiles;
+  if (elS) elS.textContent = fmtSize(totalSize);
+  if (elP) elP.textContent = pct;
+
+  var badge = document.getElementById('gf-summary-badge');
+  if (badge) {
+    if (gfAllSelected || folderCount === Object.keys(dlTreeData).length) {
+      badge.textContent = '(alle Ordner)';
+    } else if (folderCount === 0) {
+      badge.textContent = '(keine Ordner ausgew\u00E4hlt)';
+    } else {
+      badge.textContent = '(' + folderCount + ' Ordner, ' + totalFiles + ' Dateien)';
+    }
+  }
+}
+
+function gfIsFileIncluded(f) {
+  if (gfAllSelected) return true;
+  if (gfSelectedFolders.size === 0) return false;
+  var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : scanRoot;
+  return gfSelectedFolders.has(dir);
+}
+
+// Register DataTables custom filter for global folder selection
+if (typeof jQuery !== 'undefined' && jQuery.fn.dataTable) {
+  jQuery.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {
+    if (gfAllSelected) return true;
+    if (gfSelectedFolders.size === 0) return false;
+    var dir = data[3] || '';
+    return gfSelectedFolders.has(dir);
+  });
+}
+
+// Arrow toggle for details panel
+(function() {
+  var panel = document.getElementById('gf-panel');
+  var arrow = document.getElementById('gf-arrow');
+  if (panel && arrow) {
+    panel.addEventListener('toggle', function() {
+      arrow.style.transform = panel.open ? 'rotate(90deg)' : 'rotate(0deg)';
+    });
+  }
+})();
+
 // === DOCLING CONVERSION PANEL ===
 var dlTreeData = null;
 var dlSelectedFolders = new Set();
@@ -3236,6 +3536,8 @@ function dlInit() {
   // Initial sync: push Step 4 staging path into Docling fields if not manually set
   dlSyncFromStaging();
   dlBuildCommand();
+  // Initialize global folder selection (reuses dlTreeData)
+  gfBuildTree();
 }
 
 // Initial draw

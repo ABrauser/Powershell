@@ -7,9 +7,11 @@
 !**/Copy-ScannedFiles.ps1
 *_bkp.ps1
 
-# Docling runtime logs
+# Runtime logs
 docling_log.csv
 docling_runs.json
+copy_notfound.csv
+copy_errors.csv
 
 # OS files
 Thumbs.db
