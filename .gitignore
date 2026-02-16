@@ -7,6 +7,10 @@
 !**/Copy-ScannedFiles.ps1
 *_bkp.ps1
 
+# Docling runtime logs
+docling_log.csv
+docling_runs.json
+
 # OS files
 Thumbs.db
 Desktop.ini

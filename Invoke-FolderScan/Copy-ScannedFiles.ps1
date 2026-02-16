@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Copies files listed in a FolderScan CSV to a target directory, preserving folder structure.
 
@@ -171,7 +171,8 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
   Write-Host "`n[Copy-ScannedFiles] Starting copy of $total files..." -ForegroundColor Cyan
   if (-not $Force) {
     Write-Host "[Copy-ScannedFiles] Mode: Incremental (existing files will be skipped, use -Force to overwrite)" -ForegroundColor Gray
-  } else {
+  }
+  else {
     Write-Host "[Copy-ScannedFiles] Mode: Force (existing files will be overwritten)" -ForegroundColor Yellow
   }
 
@@ -232,9 +233,9 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
   $sizeMB = [math]::Round($totalSize / 1MB, 2)
   Write-Host "`n[Copy-ScannedFiles] ════════════════════════════════" -ForegroundColor Green
   Write-Host "[Copy-ScannedFiles] Copied:     $copied files ($sizeMB MB)" -ForegroundColor Green
-  if ($skippedExists -gt 0)   { Write-Host "[Copy-ScannedFiles] Skipped:    $skippedExists (already in destination)" -ForegroundColor DarkGray }
+  if ($skippedExists -gt 0) { Write-Host "[Copy-ScannedFiles] Skipped:    $skippedExists (already in destination)" -ForegroundColor DarkGray }
   if ($skippedNotFound -gt 0) { Write-Host "[Copy-ScannedFiles] Not found:  $skippedNotFound (source missing)" -ForegroundColor Yellow }
-  if ($errors -gt 0)          { Write-Host "[Copy-ScannedFiles] Errors:     $errors" -ForegroundColor Red }
+  if ($errors -gt 0) { Write-Host "[Copy-ScannedFiles] Errors:     $errors" -ForegroundColor Red }
   Write-Host "[Copy-ScannedFiles] Target:     $Destination" -ForegroundColor Green
   Write-Host "[Copy-ScannedFiles] ════════════════════════════════" -ForegroundColor Green
 }

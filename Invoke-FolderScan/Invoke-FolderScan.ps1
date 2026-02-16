@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Scans a target directory and generates an interactive HTML dashboard with statistics.
 
@@ -131,9 +131,11 @@ function Invoke-FolderScan {
   # CONFIG
   # ═══════════════════════════════════════════════════════════════
   $ConvertibleExtensions = @(
-    '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
-    '.txt', '.md', '.html', '.htm', '.csv', '.json', '.xml',
-    '.rtf', '.odt', '.ods', '.odp', '.epub', '.eml', '.msg'
+    '.pdf', '.docx', '.xlsx', '.pptx',
+    '.html', '.htm', '.md', '.csv', '.xml', '.json',
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp',
+    '.asciidoc', '.adoc', '.vtt',
+    '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.wma'
   )
 
   # ═══════════════════════════════════════════════════════════════
@@ -629,6 +631,22 @@ function Invoke-FolderScan {
 
   $convertibleListHtml = ($ConvertibleExtensions | Sort-Object | ForEach-Object { "<span class='ext-tag'>$_</span>" }) -join ''
 
+  # Docling time estimation (read from previous runs if available)
+  $doclingAvgPerFile = 0
+  if ($ErgebnisPath) {
+    $doclingRunsPath = Join-Path $ErgebnisPath "docling_runs.json"
+    if (Test-Path $doclingRunsPath) {
+      try {
+        $runsData = Get-Content -Path $doclingRunsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($runsData.runs -and $runsData.runs.Count -gt 0) {
+          $totalAvg = ($runsData.runs | Where-Object { $_.avgPerFile -gt 0 } | Measure-Object -Property avgPerFile -Average).Average
+          if ($totalAvg) { $doclingAvgPerFile = [math]::Round($totalAvg, 2) }
+        }
+      }
+      catch {}
+    }
+  }
+
   # ═══════════════════════════════════════════════════════════════
   # GENERATE HTML DASHBOARD
   # ═══════════════════════════════════════════════════════════════
@@ -993,12 +1011,36 @@ $themeCss
   /* Print */
   @media print {
     body { background: #fff; color: #000; }
-    .chart-section, .delta-section, .info-box, .quick-filters, .dt-buttons, .dt-search, .dt-length, .structure-section, .top10-section, .offline-banner { display: none !important; }
+    .chart-section, .delta-section, .info-box, .quick-filters, .dt-buttons, .dt-search, .dt-length, .structure-section, .top10-section, .offline-banner, .docling-section { display: none !important; }
     .stat-card { border: 1px solid #ddd; box-shadow: none; }
     .stat-value { color: #333; }
     table.dataTable thead th { background: #f0f0f0 !important; color: #333 !important; }
     table.dataTable tbody td { color: #333; }
   }
+
+  /* Docling Conversion Panel */
+  .docling-section { background: var(--bg-card); border-radius: var(--radius-card); padding: 1.5rem 2rem; margin: 1.5rem 0; border: 2px solid var(--success); }
+  .folder-tree { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-glass); border-radius: 12px; padding: 0.5rem; background: var(--bg-secondary); }
+  .ft-node { padding-left: 1.2rem; }
+  .ft-node-root { padding-left: 0; }
+  .ft-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.4rem; border-radius: 6px; cursor: default; font-size: 0.82rem; user-select: none; }
+  .ft-row:hover { background: var(--bg-card); }
+  .ft-toggle { width: 18px; text-align: center; font-size: 0.7rem; color: var(--text-muted); cursor: pointer; flex-shrink: 0; }
+  .ft-toggle.empty { visibility: hidden; }
+  .ft-cb { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+  .ft-label { flex: 1; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .ft-count { font-size: 0.72rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+  .ft-children { display: none; }
+  .ft-children.expanded { display: block; }
+  .dl-options { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin: 1rem 0; }
+  @media (max-width: 768px) { .dl-options { grid-template-columns: 1fr; } }
+  .dl-opt-group { background: var(--bg-secondary); border-radius: 12px; padding: 0.7rem 1rem; border: 1px solid var(--border-glass); }
+  .dl-opt-group h4 { font-size: 0.72rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.4rem 0; }
+  .dl-opt-row { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; }
+  .dl-opt-row label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; }
+  .dl-opt-row input[type="radio"], .dl-opt-row input[type="checkbox"] { accent-color: var(--accent); }
+  .dl-summary { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; align-items: center; padding: 0.7rem 1rem; background: var(--bg-secondary); border-radius: 12px; border: 1px solid var(--border-glass); margin: 0.8rem 0; font-size: 0.82rem; }
+  .dl-summary-val { font-weight: 600; color: var(--accent); }
 </style>
 </head>
 <body>
@@ -1194,7 +1236,7 @@ $themeCss
         <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">F&uuml;ge den Befehl in PowerShell ein. Die Ordnerstruktur wird 1:1 gespiegelt. Bereits vorhandene Dateien werden &uuml;bersprungen.</div>
         <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap">
           <label style="font-size:0.82rem;font-weight:500;color:var(--text-secondary)">Staging-Ordner:</label>
-          <input type="text" id="cmd-dest" value="$(if ($StagingPath) { $StagingPath } else { 'D:\Staging' })" style="flex:1;min-width:200px;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace" oninput="updateCopyCommand()">
+          <input type="text" id="cmd-dest" value="$(if ($StagingPath) { $StagingPath } else { 'C:\TEMP\Staging' })" style="flex:1;min-width:200px;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace" oninput="updateCopyCommand();dlSyncFromStaging()">
           <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer">
             <input type="checkbox" id="cmd-whatif" onchange="updateCopyCommand()"> -WhatIf (Testlauf)
           </label>
@@ -1214,7 +1256,7 @@ $themeCss
         <div style="font-weight:600;font-size:0.95rem;margin-bottom:0.3rem">Rescan &mdash; Status pr&uuml;fen</div>
         <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem">F&uuml;hre den Scan erneut aus, um den Pipeline-Status zu aktualisieren. Das Dashboard zeigt dann welche Dateien bereits kopiert/veredelt sind.</div>
         <div style="position:relative">
-          <pre id="cmd-rescan" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.6rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyRescanCmd()">Invoke-FolderScan -Path "$ResolvedPath" -Recurse -StagingPath "$(if ($StagingPath) { $StagingPath } else { 'D:\Staging' })"</pre>
+          <pre id="cmd-rescan" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.6rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer" onclick="copyRescanCmd()"></pre>
           <button onclick="copyRescanCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
         </div>
         <div id="wf-rescan-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
@@ -1226,6 +1268,134 @@ $themeCss
       <span style="font-size:0.78rem;color:var(--text-muted);margin-right:0.3rem">Sonstige Exporte:</span>
       <button class="qf-btn" id="btn-quick-csv" onclick="quickExportCSV()" style="font-size:0.78rem;padding:0.35rem 0.8rem">📄 CSV (Ansicht)</button>
       <button class="qf-btn" id="btn-quick-excel" onclick="quickExportExcel()" style="font-size:0.78rem;padding:0.35rem 0.8rem">📊 Excel (Ansicht)</button>
+    </div>
+  </div>
+
+  <!-- Docling Conversion Panel -->
+  <div class="docling-section" id="docling-section">
+    <h2 style="margin:0 0 0.5rem 0;font-size:1.1rem">🤖 Docling Konvertierung &mdash; Dateien veredeln</h2>
+    <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:1rem">Sende Dateien aus dem Staging-Ordner an die Docling API zur automatischen Konvertierung (PDF &rarr; Markdown, HTML, etc.).</p>
+
+    <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:end;margin-bottom:1rem">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Docling API URL</label>
+        <input type="text" id="dl-url" placeholder="http://janus:8080" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="dlSaveSettings();dlBuildCommand()">
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Staging-Ordner (Input)</label>
+        <input type="text" id="dl-input" value="$(if ($StagingPath) { $StagingPath } else { 'C:\TEMP\Staging' })" placeholder="C:\TEMP\Staging" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="dlOnInputManual();dlSaveSettings();dlBuildCommand()">
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Ergebnis-Ordner (Output)</label>
+        <input type="text" id="dl-output" value="$(if ($ErgebnisPath) { $ErgebnisPath } else { 'C:\TEMP\Result' })" placeholder="C:\TEMP\Result" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="dlOnOutputManual();dlSaveSettings();dlBuildCommand()">
+      </div>
+    </div>
+
+    <div style="margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary)">Ordner ausw&auml;hlen (rekursiv) <span id="dl-folder-count" style="font-weight:400;color:var(--text-muted)"></span></label>
+        <div style="display:flex;gap:0.4rem">
+          <button class="qf-btn" id="dl-btn-all" onclick="dlSelectAll()" style="font-size:0.72rem;padding:0.25rem 0.7rem">Alle</button>
+          <button class="qf-btn" id="dl-btn-none" onclick="dlSelectNone()" style="font-size:0.72rem;padding:0.25rem 0.7rem">Keine</button>
+          <button class="qf-btn" id="dl-btn-conv" onclick="dlSelectConvertible()" style="font-size:0.72rem;padding:0.25rem 0.7rem">Nur konvertierbare</button>
+        </div>
+      </div>
+      <input type="text" id="dl-folder-search" placeholder="Ordner suchen..." style="width:100%;padding:0.4rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem;margin-bottom:0.5rem" oninput="dlFilterTree(this.value)">
+      <div class="folder-tree" id="dl-folder-tree"></div>
+    </div>
+
+    <div class="dl-summary" id="dl-summary">
+      <div>📂 <span class="dl-summary-val" id="dl-sum-folders">0</span> Ordner</div>
+      <div>📄 <span class="dl-summary-val" id="dl-sum-files">0</span> Dateien</div>
+      <div>(<span class="dl-summary-val" id="dl-sum-pct">0</span>%)</div>
+      <div>💾 <span class="dl-summary-val" id="dl-sum-size">0 B</span></div>
+      <div>⏱️ <span class="dl-summary-val" id="dl-sum-eta">&ndash;</span></div>
+    </div>
+
+    <details style="margin-bottom:1rem">
+      <summary style="cursor:pointer;font-size:0.9rem;font-weight:600;color:var(--text-primary);padding:0.5rem 0">⚙️ Docling Optionen <span style="font-size:0.72rem;font-weight:400;color:var(--text-muted)">(siehe auch: &lt;Docling-URL&gt;/ui)</span></summary>
+      <div class="dl-options" id="dl-options">
+        <div class="dl-opt-group">
+          <h4>To Formats</h4>
+          <div class="dl-opt-row">
+            <label><input type="checkbox" name="dl-fmt" value="markdown" checked onchange="dlBuildCommand()"> Markdown</label>
+            <label><input type="checkbox" name="dl-fmt" value="html" onchange="dlBuildCommand()"> HTML</label>
+            <label><input type="checkbox" name="dl-fmt" value="text" onchange="dlBuildCommand()"> Plain Text</label>
+            <label><input type="checkbox" name="dl-fmt" value="json" onchange="dlBuildCommand()"> Docling JSON</label>
+            <label><input type="checkbox" name="dl-fmt" value="doctags" onchange="dlBuildCommand()"> Doc Tags</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Image Export Mode</h4>
+          <div class="dl-opt-row">
+            <label><input type="radio" name="dl-imgmode" value="embedded" checked onchange="dlBuildCommand()"> Embedded</label>
+            <label><input type="radio" name="dl-imgmode" value="placeholder" onchange="dlBuildCommand()"> Placeholder</label>
+            <label><input type="radio" name="dl-imgmode" value="referenced" onchange="dlBuildCommand()"> Referenced</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Pipeline Type</h4>
+          <div class="dl-opt-row">
+            <label><input type="radio" name="dl-pipeline" value="legacy" onchange="dlBuildCommand()"> Legacy</label>
+            <label><input type="radio" name="dl-pipeline" value="standard" checked onchange="dlBuildCommand()"> Standard</label>
+            <label><input type="radio" name="dl-pipeline" value="vlm" onchange="dlBuildCommand()"> Vlm</label>
+            <label><input type="radio" name="dl-pipeline" value="asr" onchange="dlBuildCommand()"> Asr</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>OCR</h4>
+          <div class="dl-opt-row">
+            <label><input type="checkbox" id="dl-ocr" checked onchange="dlBuildCommand()"> Enable OCR</label>
+            <label><input type="checkbox" id="dl-forceocr" onchange="dlBuildCommand()"> Force OCR</label>
+          </div>
+          <div class="dl-opt-row" style="margin-top:0.3rem">
+            <label><input type="radio" name="dl-ocreng" value="auto" checked onchange="dlBuildCommand()"> Auto</label>
+            <label><input type="radio" name="dl-ocreng" value="easyocr" onchange="dlBuildCommand()"> EasyOCR</label>
+            <label><input type="radio" name="dl-ocreng" value="tesseract" onchange="dlBuildCommand()"> Tesseract</label>
+            <label><input type="radio" name="dl-ocreng" value="rapidocr" onchange="dlBuildCommand()"> RapidOCR</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>PDF Backend</h4>
+          <div class="dl-opt-row">
+            <label><input type="radio" name="dl-pdfbe" value="pypdfium2" onchange="dlBuildCommand()"> pypdfium2</label>
+            <label><input type="radio" name="dl-pdfbe" value="dlparse_v1" onchange="dlBuildCommand()"> dlparse_v1</label>
+            <label><input type="radio" name="dl-pdfbe" value="dlparse_v2" onchange="dlBuildCommand()"> dlparse_v2</label>
+            <label><input type="radio" name="dl-pdfbe" value="dlparse_v4" checked onchange="dlBuildCommand()"> dlparse_v4</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Table Mode</h4>
+          <div class="dl-opt-row">
+            <label><input type="radio" name="dl-tblmode" value="fast" onchange="dlBuildCommand()"> Fast</label>
+            <label><input type="radio" name="dl-tblmode" value="accurate" checked onchange="dlBuildCommand()"> Accurate</label>
+          </div>
+        </div>
+        <div class="dl-opt-group" style="grid-column:1/-1">
+          <h4>Enrichment</h4>
+          <div class="dl-opt-row">
+            <label><input type="checkbox" id="dl-code-enrich" onchange="dlBuildCommand()"> Code enrichment</label>
+            <label><input type="checkbox" id="dl-formula-enrich" onchange="dlBuildCommand()"> Formula enrichment</label>
+            <label><input type="checkbox" id="dl-pic-class" onchange="dlBuildCommand()"> Picture classification</label>
+            <label><input type="checkbox" id="dl-pic-desc" onchange="dlBuildCommand()"> Picture description</label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div style="display:flex;gap:1.2rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+      <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem;cursor:pointer"><input type="checkbox" id="dl-skip" checked onchange="dlBuildCommand()" style="accent-color:var(--success)"> <strong>Skip existing</strong> <span style="font-size:0.72rem;color:var(--text-muted)">(bereits konvertierte Dateien &uuml;berspringen)</span></label>
+      <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem;cursor:pointer"><input type="checkbox" id="dl-abort" onchange="dlBuildCommand()" style="accent-color:var(--danger)"> <strong>Abort on Error</strong> <span style="font-size:0.72rem;color:var(--text-muted)">(bei Fehler sofort abbrechen)</span></label>
+      <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem"><strong>Retries</strong> <input type="number" id="dl-retries" value="3" min="0" max="10" step="1" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="dlBuildCommand()"> <span style="font-size:0.72rem;color:var(--text-muted)">(Wiederholungen bei Fehler)</span></label>
+    </div>
+
+    <div style="margin-top:1rem">
+      <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Generierter Befehl</label>
+      <div style="position:relative">
+        <pre id="dl-cmd" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.8rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer;min-height:3rem" onclick="dlCopyCmd()"></pre>
+        <button onclick="dlCopyCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
+      </div>
+      <div id="dl-cmd-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
     </div>
   </div>
 
@@ -1541,8 +1711,9 @@ function scrollToTable() {
 function toggleExt(ext) {
   if (activeFilters.ext.has(ext)) activeFilters.ext.delete(ext);
   else activeFilters.ext.add(ext);
-  // If user manually changes ext selection during conv auto-mode, discard saved state
-  if (activeFilters.conv === 'Ja' && extSelectionBeforeConvAuto) {
+  // If user manually changes ext selection during conv auto-mode, clear conv filter
+  if (activeFilters.conv) {
+    activeFilters.conv = null;
     extSelectionBeforeConvAuto = null;
   }
   applyFilters();
@@ -1553,7 +1724,7 @@ function toggleConv(val) {
   // Toggle off
   if (activeFilters.conv === val) {
     activeFilters.conv = null;
-    if (val === 'Ja' && extSelectionBeforeConvAuto) {
+    if (extSelectionBeforeConvAuto) {
       activeFilters.ext = new Set(extSelectionBeforeConvAuto);
       extSelectionBeforeConvAuto = null;
     }
@@ -1561,23 +1732,22 @@ function toggleConv(val) {
     return;
   }
 
-  // Switching away from auto-convertible mode restores prior manual ext-selection
-  if (activeFilters.conv === 'Ja' && extSelectionBeforeConvAuto) {
+  // Switching away from previous auto-mode restores prior manual ext-selection
+  if (activeFilters.conv && extSelectionBeforeConvAuto) {
     activeFilters.ext = new Set(extSelectionBeforeConvAuto);
     extSelectionBeforeConvAuto = null;
   }
 
   activeFilters.conv = val;
+  extSelectionBeforeConvAuto = new Set(activeFilters.ext);
 
-  // UX expectation: selecting "Nur Konvertierbare" also selects all matching extensions
-  if (val === 'Ja') {
-    extSelectionBeforeConvAuto = new Set(activeFilters.ext);
-    var convExts = new Set();
-    getFolderScopedFiles().forEach(function(f) {
-      if (f.convertible) convExts.add(f.ext || '(none)');
-    });
-    activeFilters.ext = convExts;
-  }
+  // Auto-select matching extensions for the chosen filter
+  var matchExts = new Set();
+  getFolderScopedFiles().forEach(function(f) {
+    var match = (val === 'Ja') ? f.convertible : !f.convertible;
+    if (match) matchExts.add(f.ext || '(none)');
+  });
+  activeFilters.ext = matchExts;
 
   applyFilters();
 }
@@ -2342,6 +2512,16 @@ function copyReviewCmd() {
   });
 }
 
+function updateRescanCommand() {
+  var staging = (document.getElementById('cmd-dest') || {}).value || '';
+  var result = (document.getElementById('dl-output') || {}).value || '';
+  var cmd = 'Invoke-FolderScan -Path "' + scanRoot + '" -Recurse';
+  if (staging) cmd += ' -StagingPath "' + staging + '"';
+  if (result) cmd += ' -ErgebnisPath "' + result + '"';
+  var el = document.getElementById('cmd-rescan');
+  if (el) el.textContent = cmd;
+}
+
 function copyRescanCmd() {
   var el = document.getElementById('cmd-rescan');
   if (!el) return;
@@ -2565,6 +2745,499 @@ function checkOffline() {
   }
 }
 
+// === DOCLING CONVERSION PANEL ===
+var dlTreeData = null;
+var dlSelectedFolders = new Set();
+var dlAvgPerFile = $doclingAvgPerFile;
+
+function dlBuildTree() {
+  var root = scanRoot;
+  var folders = {};
+  folders[root] = { path: root, name: root.split('\\').pop() || root, children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0 };
+
+  allFiles.forEach(function(f) {
+    var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : root;
+    if (!folders[dir]) {
+      var rel = dir.substring(root.length).replace(/^\\/, '');
+      var parts = rel.split('\\');
+      var current = root;
+      for (var i = 0; i < parts.length; i++) {
+        var next = current + '\\' + parts[i];
+        if (!folders[next]) {
+          folders[next] = { path: next, name: parts[i], children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0 };
+          folders[current].children[next] = true;
+        }
+        current = next;
+      }
+    }
+    folders[dir].fileCount++;
+    folders[dir].sizeBytes += f.sizeBytes;
+    if (f.convertible) folders[dir].convCount++;
+  });
+
+  function propagate(path) {
+    var node = folders[path];
+    node.totalFiles = node.fileCount;
+    node.totalSize = node.sizeBytes;
+    node.totalConv = node.convCount;
+    Object.keys(node.children).forEach(function(ck) {
+      propagate(ck);
+      node.totalFiles += folders[ck].totalFiles;
+      node.totalSize += folders[ck].totalSize;
+      node.totalConv += folders[ck].totalConv;
+    });
+  }
+  propagate(root);
+  dlTreeData = folders;
+}
+
+function dlRenderTree() {
+  var container = document.getElementById('dl-folder-tree');
+  if (!container || !dlTreeData) return;
+  container.innerHTML = '';
+  container.appendChild(dlCreateNode(scanRoot, true));
+}
+
+function dlCreateNode(path, isRoot) {
+  var node = dlTreeData[path];
+  if (!node) return document.createDocumentFragment();
+  var childKeys = Object.keys(node.children).sort();
+  var hasChildren = childKeys.length > 0;
+
+  var div = document.createElement('div');
+  div.className = 'ft-node' + (isRoot ? ' ft-node-root' : '');
+  div.dataset.path = path;
+
+  var row = document.createElement('div');
+  row.className = 'ft-row';
+
+  var toggle = document.createElement('span');
+  toggle.className = 'ft-toggle' + (hasChildren ? '' : ' empty');
+  toggle.textContent = hasChildren ? '\u25B6' : '';
+  toggle.onclick = function(e) { e.stopPropagation(); dlToggleExpand(div); };
+  row.appendChild(toggle);
+
+  var cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'ft-cb';
+  cb.dataset.path = path;
+  cb.onchange = function() { dlOnCheck(path, cb.checked); };
+  row.appendChild(cb);
+
+  var label = document.createElement('span');
+  label.className = 'ft-label';
+  label.textContent = node.name;
+  label.onclick = function() { if (hasChildren) dlToggleExpand(div); };
+  row.appendChild(label);
+
+  var count = document.createElement('span');
+  count.className = 'ft-count';
+  count.textContent = node.totalFiles + ' Dateien \u00B7 ' + fmtSize(node.totalSize);
+  row.appendChild(count);
+
+  div.appendChild(row);
+
+  if (hasChildren) {
+    var childDiv = document.createElement('div');
+    childDiv.className = 'ft-children';
+    childDiv.dataset.loaded = '0';
+    div.appendChild(childDiv);
+  }
+  return div;
+}
+
+function dlToggleExpand(nodeDiv) {
+  var childDiv = nodeDiv.querySelector(':scope > .ft-children');
+  if (!childDiv) return;
+  var isExpanded = childDiv.classList.contains('expanded');
+  var toggle = nodeDiv.querySelector(':scope > .ft-row > .ft-toggle');
+
+  if (isExpanded) {
+    childDiv.classList.remove('expanded');
+    if (toggle) toggle.textContent = '\u25B6';
+  } else {
+    if (childDiv.dataset.loaded === '0') {
+      var path = nodeDiv.dataset.path;
+      var node = dlTreeData[path];
+      if (node) {
+        Object.keys(node.children).sort().forEach(function(ck) {
+          childDiv.appendChild(dlCreateNode(ck, false));
+        });
+      }
+      childDiv.dataset.loaded = '1';
+      dlApplyCheckState(childDiv);
+    }
+    childDiv.classList.add('expanded');
+    if (toggle) toggle.textContent = '\u25BC';
+  }
+}
+
+function dlOnCheck(path, checked) {
+  function setDesc(p, val) {
+    if (val) dlSelectedFolders.add(p); else dlSelectedFolders.delete(p);
+    var n = dlTreeData[p];
+    if (n) Object.keys(n.children).forEach(function(ck) { setDesc(ck, val); });
+  }
+  setDesc(path, checked);
+  dlUpdateParents(path);
+  dlRefreshAllCbs();
+  dlUpdateSummary();
+  dlBuildCommand();
+  dlClearBtnActive();
+}
+
+function dlIsIndet(path) {
+  var node = dlTreeData[path];
+  if (!node) return false;
+  var ck = Object.keys(node.children);
+  if (ck.length === 0) return false;
+  var hasC = false, hasU = false;
+  function walk(p) {
+    if (dlSelectedFolders.has(p)) hasC = true; else hasU = true;
+    var n = dlTreeData[p];
+    if (n) Object.keys(n.children).forEach(walk);
+  }
+  ck.forEach(walk);
+  return hasC && hasU;
+}
+
+function dlIsFullyChecked(path) {
+  if (!dlSelectedFolders.has(path)) return false;
+  var node = dlTreeData[path];
+  if (!node) return false;
+  return Object.keys(node.children).every(function(ck) { return dlIsFullyChecked(ck); });
+}
+
+function dlUpdateParents(path) {
+  var root = scanRoot;
+  var current = path;
+  while (current !== root) {
+    var idx = current.lastIndexOf('\\');
+    if (idx <= 0) break;
+    var parent = current.substring(0, idx);
+    if (!dlTreeData[parent]) break;
+    var childKeys = Object.keys(dlTreeData[parent].children);
+    var allChecked = childKeys.every(function(ck) { return dlIsFullyChecked(ck); });
+    if (allChecked) dlSelectedFolders.add(parent); else dlSelectedFolders.delete(parent);
+    current = parent;
+  }
+}
+
+function dlRefreshAllCbs() {
+  document.querySelectorAll('#dl-folder-tree .ft-cb').forEach(function(cb) {
+    var p = cb.dataset.path;
+    cb.checked = dlSelectedFolders.has(p);
+    cb.indeterminate = dlIsIndet(p);
+  });
+}
+
+function dlApplyCheckState(container) {
+  container.querySelectorAll('.ft-cb').forEach(function(cb) {
+    var p = cb.dataset.path;
+    cb.checked = dlSelectedFolders.has(p);
+    cb.indeterminate = dlIsIndet(p);
+  });
+}
+
+function dlClearBtnActive() {
+  ['dl-btn-all','dl-btn-none','dl-btn-conv'].forEach(function(id) {
+    var b = document.getElementById(id);
+    if (b) b.classList.remove('active');
+  });
+}
+
+function dlSetBtnActive(id) {
+  dlClearBtnActive();
+  var b = document.getElementById(id);
+  if (b) b.classList.add('active');
+}
+
+function dlSelectAll() {
+  Object.keys(dlTreeData).forEach(function(p) { dlSelectedFolders.add(p); });
+  dlRefreshAllCbs();
+  dlUpdateSummary();
+  dlBuildCommand();
+  dlSetBtnActive('dl-btn-all');
+}
+
+function dlSelectNone() {
+  dlSelectedFolders.clear();
+  dlRefreshAllCbs();
+  dlUpdateSummary();
+  dlBuildCommand();
+  dlSetBtnActive('dl-btn-none');
+}
+
+function dlSelectConvertible() {
+  dlSelectedFolders.clear();
+  Object.keys(dlTreeData).forEach(function(p) {
+    if (dlTreeData[p].totalConv > 0) dlSelectedFolders.add(p);
+  });
+  dlRefreshAllCbs();
+  dlUpdateSummary();
+  dlBuildCommand();
+  dlSetBtnActive('dl-btn-conv');
+}
+
+function dlFilterTree(query) {
+  query = (query || '').toLowerCase();
+  document.querySelectorAll('#dl-folder-tree .ft-node').forEach(function(node) {
+    var path = (node.dataset.path || '').toLowerCase();
+    var label = node.querySelector('.ft-label');
+    var name = label ? label.textContent.toLowerCase() : '';
+    node.style.display = (!query || path.indexOf(query) >= 0 || name.indexOf(query) >= 0) ? '' : 'none';
+  });
+}
+
+function dlUpdateSummary() {
+  var totalFiles = 0, totalSize = 0, folderCount = 0;
+  var allTotal = dlTreeData && dlTreeData[scanRoot] ? dlTreeData[scanRoot].totalFiles : (allFiles ? allFiles.length : 0);
+
+  dlSelectedFolders.forEach(function(p) {
+    var node = dlTreeData[p];
+    if (node) { totalFiles += node.fileCount; totalSize += node.sizeBytes; folderCount++; }
+  });
+
+  var pct = allTotal > 0 ? Math.round((totalFiles / allTotal) * 100) : 0;
+  var elF = document.getElementById('dl-sum-folders');
+  var elFi = document.getElementById('dl-sum-files');
+  var elP = document.getElementById('dl-sum-pct');
+  var elS = document.getElementById('dl-sum-size');
+  var elE = document.getElementById('dl-sum-eta');
+
+  if (elF) elF.textContent = folderCount;
+  if (elFi) elFi.textContent = totalFiles;
+  if (elP) elP.textContent = pct;
+  if (elS) elS.textContent = fmtSize(totalSize);
+
+  if (elE) {
+    if (dlAvgPerFile > 0 && totalFiles > 0) {
+      var secs = Math.round(totalFiles * dlAvgPerFile);
+      var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+      elE.textContent = (h > 0 ? h + 'h ' : '') + m + 'min (\u00D8 ' + dlAvgPerFile.toFixed(1) + 's/Datei)';
+    } else if (totalFiles > 0) {
+      var secs2 = totalFiles;
+      var h2 = Math.floor(secs2 / 3600), m2 = Math.floor((secs2 % 3600) / 60);
+      elE.textContent = '~' + (h2 > 0 ? h2 + 'h ' : '') + m2 + 'min (Sch\u00E4tzung)';
+    } else {
+      elE.textContent = '\u2013';
+    }
+  }
+}
+
+function dlGetSelectedTopFolders() {
+  var root = scanRoot;
+  var result = [];
+  function walk(path) {
+    if (!dlSelectedFolders.has(path) && !dlIsIndet(path)) {
+      return;
+    }
+    if (dlIsFullyChecked(path)) {
+      if (path !== root) {
+        result.push(path.substring(root.length).replace(/^\\/, ''));
+      }
+      return;
+    }
+    var node = dlTreeData[path];
+    if (node) Object.keys(node.children).forEach(walk);
+  }
+  walk(root);
+  if (dlIsFullyChecked(root)) return [];
+  return result;
+}
+
+function dlBuildCommand() {
+  var url = (document.getElementById('dl-url') || {}).value || '';
+  var input = (document.getElementById('dl-input') || {}).value || '';
+  var output = (document.getElementById('dl-output') || {}).value || '';
+  var el = document.getElementById('dl-cmd');
+
+  if (!url || !input || !output) {
+    if (el) el.textContent = 'Bitte Docling URL, Input- und Output-Ordner angeben.';
+    return;
+  }
+
+  var fmts = [];
+  document.querySelectorAll('input[name="dl-fmt"]:checked').forEach(function(cb) { fmts.push(cb.value); });
+  if (fmts.length === 0) fmts = ['markdown'];
+
+  var pipeline = (document.querySelector('input[name="dl-pipeline"]:checked') || {}).value || 'standard';
+  var ocrEng = (document.querySelector('input[name="dl-ocreng"]:checked') || {}).value || 'easyocr';
+  var pdfBe = (document.querySelector('input[name="dl-pdfbe"]:checked') || {}).value || 'dlparse_v4';
+  var tblMode = (document.querySelector('input[name="dl-tblmode"]:checked') || {}).value || 'accurate';
+  var imgMode = (document.querySelector('input[name="dl-imgmode"]:checked') || {}).value || 'embedded';
+
+  var ocr = document.getElementById('dl-ocr') && document.getElementById('dl-ocr').checked;
+  var forceOcr = document.getElementById('dl-forceocr') && document.getElementById('dl-forceocr').checked;
+  var skip = document.getElementById('dl-skip') && document.getElementById('dl-skip').checked;
+  var abort = document.getElementById('dl-abort') && document.getElementById('dl-abort').checked;
+  var retries = parseInt((document.getElementById('dl-retries') || {}).value || '3', 10);
+  var codeE = document.getElementById('dl-code-enrich') && document.getElementById('dl-code-enrich').checked;
+  var formulaE = document.getElementById('dl-formula-enrich') && document.getElementById('dl-formula-enrich').checked;
+  var picC = document.getElementById('dl-pic-class') && document.getElementById('dl-pic-class').checked;
+  var picD = document.getElementById('dl-pic-desc') && document.getElementById('dl-pic-desc').checked;
+
+  var folders = dlGetSelectedTopFolders();
+
+  var bt = '\x60';
+  var cmd = '. "' + scriptRoot.replace(/[\\\/]+$/, '') + '\\Invoke-DoclingConversion.ps1"\n';
+  cmd += 'Invoke-DoclingConversion -DoclingUrl "' + url + '" ' + bt + '\n';
+  cmd += '  -InputPath "' + input + '" -OutputPath "' + output + '"';
+
+  if (folders.length > 0) {
+    cmd += ' ' + bt + '\n  -Folders ' + folders.map(function(f) { return '"' + f + '"'; }).join(',');
+  }
+  cmd += ' ' + bt + '\n  -ToFormats ' + fmts.join(',');
+
+  var extras = '';
+  if (pipeline !== 'standard') extras += ' -PipelineType ' + pipeline;
+  if (ocr) extras += ' -EnableOcr';
+  if (forceOcr) extras += ' -ForceOcr';
+  if (ocr && ocrEng !== 'auto') extras += ' -OcrEngine ' + ocrEng;
+  if (pdfBe !== 'dlparse_v4') extras += ' -PdfBackend ' + pdfBe;
+  if (tblMode !== 'accurate') extras += ' -TableMode ' + tblMode;
+  if (imgMode !== 'embedded') extras += ' -ImageExportMode ' + imgMode;
+  if (abort) extras += ' -AbortOnError';
+  if (codeE) extras += ' -EnableCodeEnrichment';
+  if (formulaE) extras += ' -EnableFormulaEnrichment';
+  if (picC) extras += ' -EnablePictureClassification';
+  if (picD) extras += ' -EnablePictureDescription';
+  if (!skip) extras += ' -Force';
+  if (retries !== 3) extras += ' -RetryCount ' + retries;
+  if (extras) cmd += ' ' + bt + '\n ' + extras.trim();
+
+  if (el) el.textContent = cmd;
+  dlSaveSettings();
+}
+
+function dlCopyCmd() {
+  var el = document.getElementById('dl-cmd');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    var msg = document.getElementById('dl-cmd-copied');
+    if (msg) { msg.textContent = 'In Zwischenablage kopiert!'; msg.style.opacity = '1'; setTimeout(function() { msg.style.opacity = '0'; }, 2000); }
+  });
+}
+
+var dlInputManual = false;
+var dlOutputManual = false;
+
+function dlDeriveResultPath(stagingPath) {
+  if (!stagingPath) return '';
+  var p = stagingPath.replace(/[\\\/]+$/, '');
+  var idx = p.lastIndexOf('\\');
+  if (idx < 0) idx = p.lastIndexOf('/');
+  if (idx >= 0) return p.substring(0, idx + 1) + 'Result';
+  return p + '\\Result';
+}
+
+function dlSyncFromStaging() {
+  var staging = (document.getElementById('cmd-dest') || {}).value || '';
+  if (!staging) return;
+  var dlIn = document.getElementById('dl-input');
+  var dlOut = document.getElementById('dl-output');
+  if (dlIn && !dlInputManual) {
+    dlIn.value = staging;
+  }
+  if (dlOut && !dlOutputManual) {
+    var src = dlIn ? dlIn.value : staging;
+    dlOut.value = dlDeriveResultPath(src);
+  }
+  dlSaveSettings();
+  dlBuildCommand();
+  updateRescanCommand();
+}
+
+function dlOnInputManual() {
+  dlInputManual = true;
+  var dlIn = document.getElementById('dl-input');
+  var dlOut = document.getElementById('dl-output');
+  if (dlIn && dlOut && !dlOutputManual) {
+    dlOut.value = dlDeriveResultPath(dlIn.value);
+  }
+  updateRescanCommand();
+}
+
+function dlOnOutputManual() {
+  dlOutputManual = true;
+  updateRescanCommand();
+}
+
+function dlSaveSettings() {
+  try {
+    var s = {};
+    // Text fields
+    s.url = (document.getElementById('dl-url') || {}).value || '';
+    s.input = (document.getElementById('dl-input') || {}).value || '';
+    s.output = (document.getElementById('dl-output') || {}).value || '';
+    s.staging = (document.getElementById('cmd-dest') || {}).value || '';
+    s.retries = (document.getElementById('dl-retries') || {}).value || '3';
+    // Checkboxes
+    ['dl-ocr','dl-forceocr','dl-skip','dl-abort','dl-code-enrich','dl-formula-enrich','dl-pic-class','dl-pic-desc'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) s[id] = el.checked;
+    });
+    // Format checkboxes
+    s.fmts = [];
+    document.querySelectorAll('input[name="dl-fmt"]').forEach(function(cb) { if (cb.checked) s.fmts.push(cb.value); });
+    // Radio groups
+    ['dl-imgmode','dl-pipeline','dl-ocreng','dl-pdfbe','dl-tblmode'].forEach(function(name) {
+      var el = document.querySelector('input[name="' + name + '"]:checked');
+      if (el) s[name] = el.value;
+    });
+    // Override flags
+    s.inputManual = dlInputManual;
+    s.outputManual = dlOutputManual;
+    localStorage.setItem('dl_settings', JSON.stringify(s));
+  } catch(e) {}
+}
+
+function dlLoadSettings() {
+  try {
+    var raw = localStorage.getItem('dl_settings');
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    // Text fields
+    if (s.url) { var e = document.getElementById('dl-url'); if (e) e.value = s.url; }
+    if (s.staging) { var e2 = document.getElementById('cmd-dest'); if (e2) e2.value = s.staging; }
+    if (s.input) { var e3 = document.getElementById('dl-input'); if (e3) e3.value = s.input; }
+    if (s.output) { var e4 = document.getElementById('dl-output'); if (e4) e4.value = s.output; }
+    if (s.retries) { var e5 = document.getElementById('dl-retries'); if (e5) e5.value = s.retries; }
+    // Checkboxes
+    ['dl-ocr','dl-forceocr','dl-skip','dl-abort','dl-code-enrich','dl-formula-enrich','dl-pic-class','dl-pic-desc'].forEach(function(id) {
+      if (s.hasOwnProperty(id)) { var el = document.getElementById(id); if (el) el.checked = s[id]; }
+    });
+    // Format checkboxes
+    if (s.fmts) {
+      document.querySelectorAll('input[name="dl-fmt"]').forEach(function(cb) { cb.checked = s.fmts.indexOf(cb.value) >= 0; });
+    }
+    // Radio groups
+    ['dl-imgmode','dl-pipeline','dl-ocreng','dl-pdfbe','dl-tblmode'].forEach(function(name) {
+      if (s[name]) {
+        var el = document.querySelector('input[name="' + name + '"][value="' + s[name] + '"]');
+        if (el) el.checked = true;
+      }
+    });
+    // Override flags
+    if (s.inputManual) dlInputManual = true;
+    if (s.outputManual) dlOutputManual = true;
+  } catch(e) {}
+}
+
+function dlInit() {
+  dlBuildTree();
+  var fc = document.getElementById('dl-folder-count');
+  if (fc && dlTreeData) {
+    var cnt = Object.keys(dlTreeData).length;
+    fc.textContent = '(' + cnt + ' Ordner gesamt)';
+  }
+  dlRenderTree();
+  dlLoadSettings();
+  // Initial sync: push Step 4 staging path into Docling fields if not manually set
+  dlSyncFromStaging();
+  dlBuildCommand();
+}
+
 // Initial draw
 jQuery(document).ready(function() {
   var activityBody = document.getElementById('activity-body');
@@ -2587,6 +3260,7 @@ jQuery(document).ready(function() {
   try { buildTop10(); } catch(e) { console.error('Top10 Error:', e); }
   try { switchAnalysisPane('files'); } catch(e) {}
   try { checkOffline(); } catch(e) {}
+  try { dlInit(); } catch(e) { console.error('Docling Init Error:', e); }
 });
 
 </script>

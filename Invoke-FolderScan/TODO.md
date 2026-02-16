@@ -1,6 +1,6 @@
 # Invoke-FolderScan — Offene Punkte & Status
 
-## Stand: 2026-02-13
+## Stand: 2026-02-16
 
 ### ✅ Erledigt
 
@@ -20,16 +20,34 @@
 - **-PassThru Parameter** — Gibt FileList-Objekte nur auf Wunsch zurück
 - **-NoGui Parameter** — Überspringt HTML/data.js Generierung
 - **Parameter-Dokumentation** — .SYNOPSIS mit allen neuen Parametern + Beispielen
+- **Docling API Integration** — `Invoke-DoclingConversion.ps1`:
+  - POST `/v1/convert/file` Multipart-Upload an Docling Serve API
+  - Bulk-Verarbeitung mit Write-Progress, ETA-Berechnung
+  - Retry mit exponential Backoff (konfigurierbar, Default: 3 Retries)
+  - API Health-Check vor Batch-Start
+  - Skip-existing (Resume-safe bei Abbruch)
+  - Konfigurierbare Ausgabeformate: Markdown (Default), HTML, Text, JSON, DocTags
+  - Vollständige Docling-Optionen: Pipeline Type, OCR, PDF Backend, Table Mode, Image Export, Enrichment
+  - Multi-Format Output mit Unterordnern pro Format
+  - Per-File Log (`docling_log.csv`) + Run Summary (`docling_runs.json`)
+  - Folder-basierter Input (`-InputPath` + `-Folders`) oder CSV-basiert (`-CsvPath`)
+  - `-TimeoutSec`, `-MaxConcurrency`, `-Force`, `-AbortOnError`
+- **Dashboard Docling-Panel** — Neuer Abschnitt im Dashboard:
+  - Hierarchischer Ordner-Baum mit Tri-State-Checkboxen (rekursiv)
+  - Lazy-Rendering für Performance bei vielen Ordnern
+  - Ordner-Suche, Alle/Keine/Nur konvertierbare Buttons
+  - Summary-Bar: Ordner, Dateien, %, Größe, geschätzte Dauer
+  - Zeitschätzung aus `docling_runs.json` (Ø s/Datei)
+  - Vollständiges Options-Panel (To Formats, Pipeline, OCR, PDF Backend, Table, Enrichment)
+  - Command Builder generiert kopierbaren PowerShell-Befehl
+  - localStorage-Persistenz für Docling URL, Input/Output Pfade
 
 ### 🔲 Offen
 
-- **Docling API Integration** — Neues Skript `Invoke-DoclingConversion.ps1`:
-  - Dateien aus Staging per REST API an Docling schicken
-  - Markdown-Ergebnisse im Ergebnis-Ordner ablegen
-  - Write-Progress Fortschritt
-  - Voraussetzung: Docling API URL/Endpoint klären (Docker lokal? Externer Service?)
 - **Copy-ScannedFiles.ps1 Examples** — `.EXAMPLE` Abschnitte: `FullScan.csv` durch `Pipeline_*.csv` ersetzen
-- **Optionaler Step 6: Docling** — Im Workflow-Guide einbauen sobald API-Skript fertig
+- **README.md Update** — Neue Parameter, Docling-Workflow, Invoke-DoclingConversion Dokumentation
+- **Praxistest** — Invoke-DoclingConversion gegen echten Docling Serve testen, Response-Parsing validieren
+- **MaxConcurrency** — Parallele API-Calls (Runspace/Job-basiert) implementieren (aktuell sequentiell)
 
 ### 📝 Architektur-Hinweise
 
@@ -37,3 +55,5 @@
 - **CSV-Vertrag**: `FullScan.csv` = Inventar (nie direkt kopieren), `Pipeline_*.csv` = kuratierte Arbeitsliste
 - **Dashboard**: Statische HTML-Datei, JavaScript im Browser, keine Server-Komponente
 - **Pfade in JS**: Müssen mit `-replace '\\', '\\\\'` escaped werden (PowerShell Here-String → JS String)
+- **Docling API**: Base URL z.B. `http://janus:8080`, Endpoint `POST /v1/convert/file` (Multipart Form)
+- **Docling Logs**: `docling_log.csv` (per-file Detail) + `docling_runs.json` (Batch-Zusammenfassungen für Dashboard ETA)
