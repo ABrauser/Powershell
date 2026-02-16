@@ -509,9 +509,9 @@ function Invoke-FolderScan {
   $sw.WriteLine("const allFiles = [")
   $i = 0
   foreach ($f in $FileList) {
-    $n = ($f.Name -replace '\\', '\\\\' -replace '"', '\"').Replace("'", "\\'")
-    $fp = ($f.FullPath -replace '\\', '\\\\' -replace '"', '\"').Replace("'", "\\'")
-    $dn = ($f.DirectoryName -replace '\\', '\\\\' -replace '"', '\"').Replace("'", "\\'")
+    $n = ($f.Name -replace '\\', '\\\\' -replace '"', '\"')
+    $fp = ($f.FullPath -replace '\\', '\\\\' -replace '"', '\"')
+    $dn = ($f.DirectoryName -replace '\\', '\\\\' -replace '"', '\"')
 
     # Delta status
     $status = 'unchanged'

@@ -182,8 +182,9 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
 
   foreach ($f in $files) {
     $current++
-    # Normalize path: trim whitespace, remove BOM/invisible chars, normalize separators
+    # Normalize path: trim whitespace, remove BOM/invisible chars, fix escaped apostrophes, normalize separators
     $sourcePath = ($f.FullPath -replace '[\u200B\u200C\u200D\uFEFF]', '').Trim()
+    $sourcePath = $sourcePath -replace "\\'", "'"
     $sourcePath = $sourcePath -replace '/', '\'
     $pctComplete = [math]::Round(($current / $total) * 100)
 
