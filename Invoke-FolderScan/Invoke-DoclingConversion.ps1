@@ -203,9 +203,9 @@ function Invoke-DoclingConversion {
     [string]$LogDir
   )
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # INIT
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $DoclingUrl = $DoclingUrl.TrimEnd('/')
 
   if ($Force) { $SkipExisting = $false }
@@ -243,7 +243,7 @@ function Invoke-DoclingConversion {
   $logCsvPath = Join-Path $LogDir "docling_log.csv"
   $runsJsonPath = Join-Path $LogDir "docling_runs.json"
 
-  Write-Host "`n[Invoke-DoclingConversion] ════════════════════════════════" -ForegroundColor Cyan
+  Write-Host "`n[Invoke-DoclingConversion] ================================" -ForegroundColor Cyan
   Write-Host "[Invoke-DoclingConversion] Docling URL:  $DoclingUrl" -ForegroundColor Cyan
   Write-Host "[Invoke-DoclingConversion] Formats:      $($ToFormats -join ', ')" -ForegroundColor Cyan
   Write-Host "[Invoke-DoclingConversion] Pipeline:     $PipelineType" -ForegroundColor Cyan
@@ -257,9 +257,9 @@ function Invoke-DoclingConversion {
   # Normalize URL: remove trailing slashes
   $DoclingUrl = $DoclingUrl.TrimEnd('/')
 
-  # ═══════════════════════════════════════════════════════════════
-  # API HEALTH CHECK (with IPv6→IPv4 fallback for .local hostnames)
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
+  # API HEALTH CHECK (with IPv6->IPv4 fallback for .local hostnames)
+  # ================================================================
   Write-Host "`n[Invoke-DoclingConversion] Checking API health..." -ForegroundColor Yellow
   $apiReachable = $false
   $urlsToTry = @($DoclingUrl)
@@ -304,9 +304,9 @@ function Invoke-DoclingConversion {
 
   $convertEndpoint = "$DoclingUrl/v1/convert/file"
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # COLLECT FILES
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $filesToProcess = @()
   $inputRoot = ''
 
@@ -430,9 +430,9 @@ function Invoke-DoclingConversion {
     return
   }
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # SKIP EXISTING CHECK
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $filesToConvert = @()
   $skippedExisting = 0
 
@@ -490,15 +490,15 @@ function Invoke-DoclingConversion {
   $totalSizeMB = [math]::Round(($filesToConvert | Measure-Object -Property SizeMB -Sum).Sum, 2)
   Write-Host "[Invoke-DoclingConversion] Total size:   $totalSizeMB MB" -ForegroundColor Cyan
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # PREPARE LOG
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $logEntries = @()
   $batchStart = Get-Date
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # CONVERSION LOOP
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $converted = 0
   $failed = 0
   $totalFiles = $filesToConvert.Count
@@ -566,8 +566,17 @@ function Invoke-DoclingConversion {
         $form.Add([System.Net.Http.StringContent]::new($EnablePictureClassification.ToString().ToLower()), 'do_picture_classification')
         $form.Add([System.Net.Http.StringContent]::new($EnablePictureDescription.ToString().ToLower()), 'do_picture_description')
 
-        $response = $httpClient.PostAsync($convertEndpoint, $form).GetAwaiter().GetResult()
-        $responseBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if ($current -eq 1 -and $attempt -eq 1) {
+          Write-Host "  [INFO] Sending first file to API ($convertEndpoint)..." -ForegroundColor DarkGray
+        }
+        $postTask = $httpClient.PostAsync($convertEndpoint, $form)
+        if (-not $postTask.Wait([int]($TimeoutSec * 1000))) {
+          throw "HTTP request timed out after ${TimeoutSec}s"
+        }
+        $response = $postTask.Result
+        $readTask = $response.Content.ReadAsStringAsync()
+        $readTask.Wait(30000) | Out-Null
+        $responseBody = $readTask.Result
 
         if (-not $response.IsSuccessStatusCode) {
           throw "HTTP $([int]$response.StatusCode) $($response.ReasonPhrase): $($responseBody.Substring(0, [math]::Min(500, $responseBody.Length)))"
@@ -710,9 +719,9 @@ function Invoke-DoclingConversion {
   try { $httpClient.Dispose() } catch {}
   try { $httpHandler.Dispose() } catch {}
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # WRITE LOGS
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $batchEnd = Get-Date
   $batchDuration = ($batchEnd - $batchStart).TotalSeconds
 
@@ -755,16 +764,16 @@ function Invoke-DoclingConversion {
   [System.IO.File]::WriteAllText($runsJsonPath, $runsJson, [System.Text.Encoding]::UTF8)
   Write-Host "[Invoke-DoclingConversion] Run summary:  $runsJsonPath" -ForegroundColor DarkGray
 
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   # SUMMARY
-  # ═══════════════════════════════════════════════════════════════
+  # ================================================================
   $avgTime = if ($converted -gt 0) { [math]::Round($totalConvertTime / $converted, 2) } else { 0 }
 
-  Write-Host "`n[Invoke-DoclingConversion] ════════════════════════════════" -ForegroundColor Green
+  Write-Host "`n[Invoke-DoclingConversion] ================================" -ForegroundColor Green
   Write-Host "[Invoke-DoclingConversion] Converted:    $converted files" -ForegroundColor Green
   if ($failed -gt 0) { Write-Host "[Invoke-DoclingConversion] Failed:       $failed files" -ForegroundColor Red }
   if ($skippedExisting -gt 0) { Write-Host "[Invoke-DoclingConversion] Skipped:      $skippedExisting (already exist)" -ForegroundColor DarkGray }
   Write-Host "[Invoke-DoclingConversion] Duration:     $([math]::Round($batchDuration, 1))s (avg ${avgTime}s/file)" -ForegroundColor Green
   Write-Host "[Invoke-DoclingConversion] Output:       $OutputPath" -ForegroundColor Green
-  Write-Host "[Invoke-DoclingConversion] ════════════════════════════════" -ForegroundColor Green
+  Write-Host "[Invoke-DoclingConversion] ================================" -ForegroundColor Green
 }
