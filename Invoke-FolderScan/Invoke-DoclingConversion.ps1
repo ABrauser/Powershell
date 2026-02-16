@@ -507,11 +507,37 @@ function Invoke-DoclingConversion {
 
   Write-Host "`n[Invoke-DoclingConversion] Starting conversion..." -ForegroundColor Cyan
 
-  # Create a shared HttpClient (reuse for all requests — much faster than per-file)
-  $httpHandler = [System.Net.Http.HttpClientHandler]::new()
-  $httpClient = [System.Net.Http.HttpClient]::new($httpHandler)
-  $httpClient.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
-  $httpClient.DefaultRequestHeaders.Add('Accept', 'application/json')
+  # Detect PowerShell version for HTTP method selection
+  $useDotNetHttp = $PSVersionTable.PSVersion.Major -ge 7
+  $httpClient = $null
+  $httpHandler = $null
+
+  if ($useDotNetHttp) {
+    Write-Host "[Invoke-DoclingConversion] HTTP engine:  HttpClient (PS $($PSVersionTable.PSVersion))" -ForegroundColor DarkGray
+    $httpHandler = [System.Net.Http.HttpClientHandler]::new()
+    $httpClient = [System.Net.Http.HttpClient]::new($httpHandler)
+    $httpClient.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+    $httpClient.DefaultRequestHeaders.Add('Accept', 'application/json')
+  }
+  else {
+    Write-Host "[Invoke-DoclingConversion] HTTP engine:  Invoke-RestMethod (PS $($PSVersionTable.PSVersion))" -ForegroundColor DarkGray
+  }
+
+  # Helper: build form fields hashtable (shared by both code paths)
+  $formFields = [ordered]@{}
+  foreach ($fmt in $ToFormats) { $formFields["to_formats_$($ToFormats.IndexOf($fmt))"] = $formatApiMap[$fmt] }
+  $formFields['image_export_mode'] = $ImageExportMode
+  $formFields['do_ocr'] = $EnableOcr.ToString().ToLower()
+  $formFields['force_ocr'] = $ForceOcr.ToString().ToLower()
+  $formFields['ocr_engine'] = $OcrEngine
+  $formFields['pdf_backend'] = $PdfBackend
+  $formFields['table_mode'] = $TableMode
+  $formFields['pipeline'] = $PipelineType
+  $formFields['abort_on_error'] = $AbortOnError.ToString().ToLower()
+  $formFields['do_code_enrichment'] = $EnableCodeEnrichment.ToString().ToLower()
+  $formFields['do_formula_enrichment'] = $EnableFormulaEnrichment.ToString().ToLower()
+  $formFields['do_picture_classification'] = $EnablePictureClassification.ToString().ToLower()
+  $formFields['do_picture_description'] = $EnablePictureDescription.ToString().ToLower()
 
   $batchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -534,62 +560,135 @@ function Invoke-DoclingConversion {
       -Status "[$current/$totalFiles] $($file.Name) ($($file.SizeMB) MB)$eta" `
       -PercentComplete $pctComplete
 
-    # Build multipart form data using HttpClient
     $convertSuccess = $false
     $errorText = ''
     $responseContent = $null
 
     for ($attempt = 1; $attempt -le ($RetryCount + 1); $attempt++) {
       try {
-        $form = [System.Net.Http.MultipartFormDataContent]::new()
-
-        # File field (API expects field name "files")
-        $fileBytes = [System.IO.File]::ReadAllBytes($file.FullPath)
-        $fileContent = [System.Net.Http.ByteArrayContent]::new($fileBytes)
-        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
-        $form.Add($fileContent, 'files', [System.IO.Path]::GetFileName($file.FullPath))
-
-        # Flat form fields per Docling API schema
-        foreach ($fmt in $ToFormats) {
-          $form.Add([System.Net.Http.StringContent]::new($formatApiMap[$fmt]), 'to_formats')
-        }
-        $form.Add([System.Net.Http.StringContent]::new($ImageExportMode), 'image_export_mode')
-        $form.Add([System.Net.Http.StringContent]::new($EnableOcr.ToString().ToLower()), 'do_ocr')
-        $form.Add([System.Net.Http.StringContent]::new($ForceOcr.ToString().ToLower()), 'force_ocr')
-        $form.Add([System.Net.Http.StringContent]::new($OcrEngine), 'ocr_engine')
-        $form.Add([System.Net.Http.StringContent]::new($PdfBackend), 'pdf_backend')
-        $form.Add([System.Net.Http.StringContent]::new($TableMode), 'table_mode')
-        $form.Add([System.Net.Http.StringContent]::new($PipelineType), 'pipeline')
-        $form.Add([System.Net.Http.StringContent]::new($AbortOnError.ToString().ToLower()), 'abort_on_error')
-        $form.Add([System.Net.Http.StringContent]::new($EnableCodeEnrichment.ToString().ToLower()), 'do_code_enrichment')
-        $form.Add([System.Net.Http.StringContent]::new($EnableFormulaEnrichment.ToString().ToLower()), 'do_formula_enrichment')
-        $form.Add([System.Net.Http.StringContent]::new($EnablePictureClassification.ToString().ToLower()), 'do_picture_classification')
-        $form.Add([System.Net.Http.StringContent]::new($EnablePictureDescription.ToString().ToLower()), 'do_picture_description')
-
         if ($current -eq 1 -and $attempt -eq 1) {
           Write-Host "  [INFO] Sending first file to API ($convertEndpoint)..." -ForegroundColor DarkGray
         }
-        $postTask = $httpClient.PostAsync($convertEndpoint, $form)
-        if (-not $postTask.Wait([int]($TimeoutSec * 1000))) {
-          throw "HTTP request timed out after ${TimeoutSec}s"
-        }
-        $response = $postTask.Result
-        $readTask = $response.Content.ReadAsStringAsync()
-        $readTask.Wait(30000) | Out-Null
-        $responseBody = $readTask.Result
 
-        if (-not $response.IsSuccessStatusCode) {
-          throw "HTTP $([int]$response.StatusCode) $($response.ReasonPhrase): $($responseBody.Substring(0, [math]::Min(500, $responseBody.Length)))"
+        $fileBytes = [System.IO.File]::ReadAllBytes($file.FullPath)
+        $fileName = [System.IO.Path]::GetFileName($file.FullPath)
+
+        if ($useDotNetHttp) {
+          # ---- PS 7+ path: HttpClient with MultipartFormDataContent ----
+          $form = [System.Net.Http.MultipartFormDataContent]::new()
+
+          $fileContent = [System.Net.Http.ByteArrayContent]::new($fileBytes)
+          $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
+          $form.Add($fileContent, 'files', $fileName)
+
+          foreach ($fmt in $ToFormats) {
+            $form.Add([System.Net.Http.StringContent]::new($formatApiMap[$fmt]), 'to_formats')
+          }
+          $form.Add([System.Net.Http.StringContent]::new($ImageExportMode), 'image_export_mode')
+          $form.Add([System.Net.Http.StringContent]::new($EnableOcr.ToString().ToLower()), 'do_ocr')
+          $form.Add([System.Net.Http.StringContent]::new($ForceOcr.ToString().ToLower()), 'force_ocr')
+          $form.Add([System.Net.Http.StringContent]::new($OcrEngine), 'ocr_engine')
+          $form.Add([System.Net.Http.StringContent]::new($PdfBackend), 'pdf_backend')
+          $form.Add([System.Net.Http.StringContent]::new($TableMode), 'table_mode')
+          $form.Add([System.Net.Http.StringContent]::new($PipelineType), 'pipeline')
+          $form.Add([System.Net.Http.StringContent]::new($AbortOnError.ToString().ToLower()), 'abort_on_error')
+          $form.Add([System.Net.Http.StringContent]::new($EnableCodeEnrichment.ToString().ToLower()), 'do_code_enrichment')
+          $form.Add([System.Net.Http.StringContent]::new($EnableFormulaEnrichment.ToString().ToLower()), 'do_formula_enrichment')
+          $form.Add([System.Net.Http.StringContent]::new($EnablePictureClassification.ToString().ToLower()), 'do_picture_classification')
+          $form.Add([System.Net.Http.StringContent]::new($EnablePictureDescription.ToString().ToLower()), 'do_picture_description')
+
+          $postTask = $httpClient.PostAsync($convertEndpoint, $form)
+          if (-not $postTask.Wait([int]($TimeoutSec * 1000))) {
+            throw "HTTP request timed out after ${TimeoutSec}s"
+          }
+          $response = $postTask.Result
+          $readTask = $response.Content.ReadAsStringAsync()
+          $readTask.Wait(30000) | Out-Null
+          $responseBody = $readTask.Result
+
+          if (-not $response.IsSuccessStatusCode) {
+            throw "HTTP $([int]$response.StatusCode) $($response.ReasonPhrase): $($responseBody.Substring(0, [math]::Min(500, $responseBody.Length)))"
+          }
+
+          $responseContent = $responseBody | ConvertFrom-Json
+          $form.Dispose()
+        }
+        else {
+          # ---- PS 5.1 fallback: manual multipart/form-data with Invoke-RestMethod ----
+          $boundary = [System.Guid]::NewGuid().ToString('N')
+          $LF = "`r`n"
+          $enc = [System.Text.Encoding]::UTF8
+
+          # Build body parts as byte arrays
+          $bodyParts = [System.Collections.Generic.List[byte[]]]::new()
+
+          # File part
+          $fileHeader = "--$boundary$LF" +
+            "Content-Disposition: form-data; name=`"files`"; filename=`"$fileName`"$LF" +
+            "Content-Type: application/octet-stream$LF$LF"
+          $bodyParts.Add($enc.GetBytes($fileHeader))
+          $bodyParts.Add($fileBytes)
+          $bodyParts.Add($enc.GetBytes($LF))
+
+          # Form field parts (handle to_formats specially: same field name, multiple values)
+          foreach ($fmt in $ToFormats) {
+            $part = "--$boundary$LF" +
+              "Content-Disposition: form-data; name=`"to_formats`"$LF$LF" +
+              "$($formatApiMap[$fmt])$LF"
+            $bodyParts.Add($enc.GetBytes($part))
+          }
+
+          $singleFields = @{
+            'image_export_mode'       = $ImageExportMode
+            'do_ocr'                  = $EnableOcr.ToString().ToLower()
+            'force_ocr'               = $ForceOcr.ToString().ToLower()
+            'ocr_engine'              = $OcrEngine
+            'pdf_backend'             = $PdfBackend
+            'table_mode'              = $TableMode
+            'pipeline'                = $PipelineType
+            'abort_on_error'          = $AbortOnError.ToString().ToLower()
+            'do_code_enrichment'      = $EnableCodeEnrichment.ToString().ToLower()
+            'do_formula_enrichment'   = $EnableFormulaEnrichment.ToString().ToLower()
+            'do_picture_classification' = $EnablePictureClassification.ToString().ToLower()
+            'do_picture_description'  = $EnablePictureDescription.ToString().ToLower()
+          }
+
+          foreach ($key in $singleFields.Keys) {
+            $part = "--$boundary$LF" +
+              "Content-Disposition: form-data; name=`"$key`"$LF$LF" +
+              "$($singleFields[$key])$LF"
+            $bodyParts.Add($enc.GetBytes($part))
+          }
+
+          # Closing boundary
+          $bodyParts.Add($enc.GetBytes("--$boundary--$LF"))
+
+          # Merge all parts into single byte array
+          $totalLen = 0
+          foreach ($p in $bodyParts) { $totalLen += $p.Length }
+          $bodyBytes = [byte[]]::new($totalLen)
+          $offset = 0
+          foreach ($p in $bodyParts) {
+            [System.Array]::Copy($p, 0, $bodyBytes, $offset, $p.Length)
+            $offset += $p.Length
+          }
+
+          $contentType = "multipart/form-data; boundary=$boundary"
+
+          $responseBody = Invoke-RestMethod -Uri $convertEndpoint -Method Post `
+            -ContentType $contentType -Body $bodyBytes `
+            -TimeoutSec $TimeoutSec -ErrorAction Stop
+
+          # Invoke-RestMethod auto-parses JSON, so responseBody is already an object
+          $responseContent = $responseBody
         }
 
-        $responseContent = $responseBody | ConvertFrom-Json
         $convertSuccess = $true
-        $form.Dispose()
         break
       }
       catch {
         $errorText = $_.Exception.Message
-        if ($form) { try { $form.Dispose() } catch {} }
+        if ($useDotNetHttp -and $form) { try { $form.Dispose() } catch {} }
         if ($attempt -le $RetryCount) {
           $waitSec = [math]::Pow(2, $attempt)
           Write-Warning "[Invoke-DoclingConversion] Attempt $attempt failed for '$($file.Name)': $errorText. Retrying in ${waitSec}s..."
@@ -715,9 +814,9 @@ function Invoke-DoclingConversion {
   Write-Progress -Activity "Docling Conversion" -Completed
   $batchStopwatch.Stop()
 
-  # Cleanup HttpClient
-  try { $httpClient.Dispose() } catch {}
-  try { $httpHandler.Dispose() } catch {}
+  # Cleanup HttpClient (PS 7+ only)
+  if ($httpClient) { try { $httpClient.Dispose() } catch {} }
+  if ($httpHandler) { try { $httpHandler.Dispose() } catch {} }
 
   # ================================================================
   # WRITE LOGS
