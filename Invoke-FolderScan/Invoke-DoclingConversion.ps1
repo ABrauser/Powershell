@@ -675,12 +675,27 @@ function Invoke-DoclingConversion {
 
           $contentType = "multipart/form-data; boundary=$boundary"
 
-          $responseBody = Invoke-RestMethod -Uri $convertEndpoint -Method Post `
+          # Use Invoke-WebRequest (not Invoke-RestMethod) to get raw bytes,
+          # then decode as UTF-8 manually. PS 5.1's auto-parsing uses system
+          # default encoding (Windows-1252) which corrupts umlauts.
+          $webResponse = Invoke-WebRequest -Uri $convertEndpoint -Method Post `
             -ContentType $contentType -Body $bodyBytes `
-            -TimeoutSec $TimeoutSec -ErrorAction Stop
+            -TimeoutSec $TimeoutSec -ErrorAction Stop -UseBasicParsing
 
-          # Invoke-RestMethod auto-parses JSON, so responseBody is already an object
-          $responseContent = $responseBody
+          if ($webResponse.RawContentStream) {
+            # Best path: decode raw bytes as UTF-8
+            $ms = $webResponse.RawContentStream
+            $ms.Position = 0
+            $reader = [System.IO.StreamReader]::new($ms, [System.Text.Encoding]::UTF8)
+            $responseText = $reader.ReadToEnd()
+            $reader.Dispose()
+          }
+          else {
+            # Fallback: re-encode Content string through UTF-8
+            $rawBytes = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($webResponse.Content)
+            $responseText = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+          }
+          $responseContent = $responseText | ConvertFrom-Json
         }
 
         $convertSuccess = $true
