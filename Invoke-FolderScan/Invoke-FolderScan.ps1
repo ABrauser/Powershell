@@ -1303,7 +1303,7 @@ $themeCss
     <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:end;margin-bottom:1rem">
       <div style="flex:1;min-width:200px">
         <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Docling API URL</label>
-        <input type="text" id="dl-url" placeholder="http://janus:8080" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="dlSaveSettings();dlBuildCommand()">
+        <input type="text" id="dl-url" placeholder="http://localhost:5001" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="dlSaveSettings();dlBuildCommand()">
       </div>
       <div style="flex:1;min-width:200px">
         <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Staging-Ordner (Input)</label>

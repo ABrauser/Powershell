@@ -20,7 +20,7 @@
       Source (Scan) → Pipeline_*.csv → Staging (Copy-ScannedFiles) → Docling → Ergebnis
 
 .PARAMETER DoclingUrl
-    Base URL of the Docling Serve API (e.g. 'http://janus:8080').
+    Base URL of the Docling Serve API (e.g. 'http://localhost:5001').
 
 .PARAMETER InputPath
     Folder containing files to convert (typically the Staging folder).
@@ -115,21 +115,21 @@
 
 .EXAMPLE
     . .\Invoke-DoclingConversion.ps1
-    Invoke-DoclingConversion -DoclingUrl "http://janus:8080" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis"
+    Invoke-DoclingConversion -DoclingUrl "http://localhost:5001" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis"
 
 .EXAMPLE
     # Only specific subfolders, multiple output formats
-    Invoke-DoclingConversion -DoclingUrl "http://janus:8080" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis" `
+    Invoke-DoclingConversion -DoclingUrl "http://localhost:5001" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis" `
       -Folders "Vertraege","Rechnungen\Eingang" -ToFormats markdown,html
 
 .EXAMPLE
     # Force re-conversion of all files, with OCR
-    Invoke-DoclingConversion -DoclingUrl "http://janus:8080" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis" `
+    Invoke-DoclingConversion -DoclingUrl "http://localhost:5001" -InputPath "D:\Staging" -OutputPath "D:\Ergebnis" `
       -Force -EnableOcr -OcrEngine easyocr
 
 .EXAMPLE
     # From Pipeline CSV instead of folder
-    Invoke-DoclingConversion -DoclingUrl "http://janus:8080" -CsvPath ".\scan-results\Pipeline_2026-02-16_1430.csv" `
+    Invoke-DoclingConversion -DoclingUrl "http://localhost:5001" -CsvPath ".\scan-results\Pipeline_2026-02-16_1430.csv" `
       -OutputPath "D:\Ergebnis" -ToFormats markdown
 #>
 
@@ -743,10 +743,18 @@ function Invoke-DoclingConversion {
             $pollResult = $pollText | ConvertFrom-Json
             $taskStatus = $pollResult.task_status
 
-            # Update progress with polling info
+            # Update progress with polling info + ETA
             $elapsedFile = $fileStart.Elapsed
+            $pollEta = ''
+            if ($converted -gt 0) {
+              $avgSec2 = $totalConvertTime / $converted
+              $remaining2 = ($totalFiles - $current) * $avgSec2 + [math]::Max(0, $avgSec2 - $elapsedFile.TotalSeconds)
+              $etaTs2 = [TimeSpan]::FromSeconds([math]::Max(0, $remaining2))
+              $elapsed2 = $batchStopwatch.Elapsed
+              $pollEta = " | ETA: $($etaTs2.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed2.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec2,1))s/file"
+            }
             Write-Progress -Activity "Docling Conversion" `
-              -Status "[$current/$totalFiles] $($file.Name) - converting... ($([math]::Round($elapsedFile.TotalSeconds))s, status: $taskStatus)" `
+              -Status "[$current/$totalFiles] $($file.Name) - converting... ($([math]::Round($elapsedFile.TotalSeconds))s)$pollEta" `
               -PercentComplete $pctComplete
           }
 
