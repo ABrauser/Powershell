@@ -302,7 +302,39 @@ function Invoke-DoclingConversion {
     return
   }
 
+  # Detect async endpoint availability (avoids proxy timeout for large files)
+  $useAsync = $false
   $convertEndpoint = "$DoclingUrl/v1/convert/file"
+  $asyncEndpoint = "$DoclingUrl/v1/convert/file/async"
+  $pollEndpoint = "$DoclingUrl/v1/status/poll"
+  $resultEndpoint = "$DoclingUrl/v1/result"
+
+  try {
+    # OPTIONS or a quick test to see if async endpoint exists
+    $null = Invoke-WebRequest -Uri "$DoclingUrl/v1/convert/file/async" -Method Options -TimeoutSec 5 -ErrorAction Stop -UseBasicParsing
+    $useAsync = $true
+  }
+  catch {
+    # Try HEAD as fallback (some servers don't support OPTIONS)
+    try {
+      $null = Invoke-WebRequest -Uri "$DoclingUrl/v1/convert/file/async" -Method Head -TimeoutSec 5 -ErrorAction Stop -UseBasicParsing
+      $useAsync = $true
+    }
+    catch {
+      # 405 Method Not Allowed means the endpoint exists but doesn't accept HEAD/OPTIONS
+      if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 405) {
+        $useAsync = $true
+      }
+    }
+  }
+
+  if ($useAsync) {
+    Write-Host "[Invoke-DoclingConversion] Mode:         ASYNC (resilient against proxy timeouts)" -ForegroundColor Green
+  }
+  else {
+    Write-Host "[Invoke-DoclingConversion] Mode:         SYNC (async endpoint not available)" -ForegroundColor Yellow
+    Write-Host "[Invoke-DoclingConversion] WARNING:      Large files may fail with 504 Gateway Timeout if a reverse proxy is in front of Docling." -ForegroundColor Yellow
+  }
 
   # ================================================================
   # COLLECT FILES
@@ -523,22 +555,6 @@ function Invoke-DoclingConversion {
     Write-Host "[Invoke-DoclingConversion] HTTP engine:  Invoke-RestMethod (PS $($PSVersionTable.PSVersion))" -ForegroundColor DarkGray
   }
 
-  # Helper: build form fields hashtable (shared by both code paths)
-  $formFields = [ordered]@{}
-  foreach ($fmt in $ToFormats) { $formFields["to_formats_$($ToFormats.IndexOf($fmt))"] = $formatApiMap[$fmt] }
-  $formFields['image_export_mode'] = $ImageExportMode
-  $formFields['do_ocr'] = $EnableOcr.ToString().ToLower()
-  $formFields['force_ocr'] = $ForceOcr.ToString().ToLower()
-  $formFields['ocr_engine'] = $OcrEngine
-  $formFields['pdf_backend'] = $PdfBackend
-  $formFields['table_mode'] = $TableMode
-  $formFields['pipeline'] = $PipelineType
-  $formFields['abort_on_error'] = $AbortOnError.ToString().ToLower()
-  $formFields['do_code_enrichment'] = $EnableCodeEnrichment.ToString().ToLower()
-  $formFields['do_formula_enrichment'] = $EnableFormulaEnrichment.ToString().ToLower()
-  $formFields['do_picture_classification'] = $EnablePictureClassification.ToString().ToLower()
-  $formFields['do_picture_description'] = $EnablePictureDescription.ToString().ToLower()
-
   $batchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
   foreach ($file in $filesToConvert) {
@@ -567,135 +583,185 @@ function Invoke-DoclingConversion {
     for ($attempt = 1; $attempt -le ($RetryCount + 1); $attempt++) {
       try {
         if ($current -eq 1 -and $attempt -eq 1) {
-          Write-Host "  [INFO] Sending first file to API ($convertEndpoint)..." -ForegroundColor DarkGray
+          $targetEp = if ($useAsync) { $asyncEndpoint } else { $convertEndpoint }
+          Write-Host "  [INFO] Sending first file to API ($targetEp)..." -ForegroundColor DarkGray
         }
 
         $fileBytes = [System.IO.File]::ReadAllBytes($file.FullPath)
         $fileName = [System.IO.Path]::GetFileName($file.FullPath)
 
-        if ($useDotNetHttp) {
-          # ---- PS 7+ path: HttpClient with MultipartFormDataContent ----
-          $form = [System.Net.Http.MultipartFormDataContent]::new()
+        # ---- Build multipart body (shared by all code paths) ----
+        $boundary = [System.Guid]::NewGuid().ToString('N')
+        $LF = "`r`n"
+        $enc = [System.Text.Encoding]::UTF8
+        $bodyParts = [System.Collections.Generic.List[byte[]]]::new()
 
-          $fileContent = [System.Net.Http.ByteArrayContent]::new($fileBytes)
-          $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
-          $form.Add($fileContent, 'files', $fileName)
+        # File part
+        $fileHeader = "--$boundary$LF" +
+          "Content-Disposition: form-data; name=`"files`"; filename=`"$fileName`"$LF" +
+          "Content-Type: application/octet-stream$LF$LF"
+        $bodyParts.Add($enc.GetBytes($fileHeader))
+        $bodyParts.Add($fileBytes)
+        $bodyParts.Add($enc.GetBytes($LF))
 
-          foreach ($fmt in $ToFormats) {
-            $form.Add([System.Net.Http.StringContent]::new($formatApiMap[$fmt]), 'to_formats')
-          }
-          $form.Add([System.Net.Http.StringContent]::new($ImageExportMode), 'image_export_mode')
-          $form.Add([System.Net.Http.StringContent]::new($EnableOcr.ToString().ToLower()), 'do_ocr')
-          $form.Add([System.Net.Http.StringContent]::new($ForceOcr.ToString().ToLower()), 'force_ocr')
-          $form.Add([System.Net.Http.StringContent]::new($OcrEngine), 'ocr_engine')
-          $form.Add([System.Net.Http.StringContent]::new($PdfBackend), 'pdf_backend')
-          $form.Add([System.Net.Http.StringContent]::new($TableMode), 'table_mode')
-          $form.Add([System.Net.Http.StringContent]::new($PipelineType), 'pipeline')
-          $form.Add([System.Net.Http.StringContent]::new($AbortOnError.ToString().ToLower()), 'abort_on_error')
-          $form.Add([System.Net.Http.StringContent]::new($EnableCodeEnrichment.ToString().ToLower()), 'do_code_enrichment')
-          $form.Add([System.Net.Http.StringContent]::new($EnableFormulaEnrichment.ToString().ToLower()), 'do_formula_enrichment')
-          $form.Add([System.Net.Http.StringContent]::new($EnablePictureClassification.ToString().ToLower()), 'do_picture_classification')
-          $form.Add([System.Net.Http.StringContent]::new($EnablePictureDescription.ToString().ToLower()), 'do_picture_description')
-
-          $postTask = $httpClient.PostAsync($convertEndpoint, $form)
-          if (-not $postTask.Wait([int]($TimeoutSec * 1000))) {
-            throw "HTTP request timed out after ${TimeoutSec}s"
-          }
-          $response = $postTask.Result
-          $readTask = $response.Content.ReadAsStringAsync()
-          $readTask.Wait(30000) | Out-Null
-          $responseBody = $readTask.Result
-
-          if (-not $response.IsSuccessStatusCode) {
-            throw "HTTP $([int]$response.StatusCode) $($response.ReasonPhrase): $($responseBody.Substring(0, [math]::Min(500, $responseBody.Length)))"
-          }
-
-          $responseContent = $responseBody | ConvertFrom-Json
-          $form.Dispose()
+        # to_formats (multiple values with same field name)
+        foreach ($fmt in $ToFormats) {
+          $part = "--$boundary$LF" +
+            "Content-Disposition: form-data; name=`"to_formats`"$LF$LF" +
+            "$($formatApiMap[$fmt])$LF"
+          $bodyParts.Add($enc.GetBytes($part))
         }
-        else {
-          # ---- PS 5.1 fallback: manual multipart/form-data with Invoke-RestMethod ----
-          $boundary = [System.Guid]::NewGuid().ToString('N')
-          $LF = "`r`n"
-          $enc = [System.Text.Encoding]::UTF8
 
-          # Build body parts as byte arrays
-          $bodyParts = [System.Collections.Generic.List[byte[]]]::new()
+        # Single-value form fields
+        $singleFields = [ordered]@{
+          'image_export_mode'         = $ImageExportMode
+          'do_ocr'                    = $EnableOcr.ToString().ToLower()
+          'force_ocr'                 = $ForceOcr.ToString().ToLower()
+          'ocr_engine'                = $OcrEngine
+          'pdf_backend'               = $PdfBackend
+          'table_mode'                = $TableMode
+          'pipeline'                  = $PipelineType
+          'abort_on_error'            = $AbortOnError.ToString().ToLower()
+          'do_code_enrichment'        = $EnableCodeEnrichment.ToString().ToLower()
+          'do_formula_enrichment'     = $EnableFormulaEnrichment.ToString().ToLower()
+          'do_picture_classification' = $EnablePictureClassification.ToString().ToLower()
+          'do_picture_description'    = $EnablePictureDescription.ToString().ToLower()
+        }
+        foreach ($key in $singleFields.Keys) {
+          $part = "--$boundary$LF" +
+            "Content-Disposition: form-data; name=`"$key`"$LF$LF" +
+            "$($singleFields[$key])$LF"
+          $bodyParts.Add($enc.GetBytes($part))
+        }
+        $bodyParts.Add($enc.GetBytes("--$boundary--$LF"))
 
-          # File part
-          $fileHeader = "--$boundary$LF" +
-            "Content-Disposition: form-data; name=`"files`"; filename=`"$fileName`"$LF" +
-            "Content-Type: application/octet-stream$LF$LF"
-          $bodyParts.Add($enc.GetBytes($fileHeader))
-          $bodyParts.Add($fileBytes)
-          $bodyParts.Add($enc.GetBytes($LF))
+        # Merge into single byte array
+        $totalLen = 0; foreach ($p in $bodyParts) { $totalLen += $p.Length }
+        $bodyBytes = [byte[]]::new($totalLen)
+        $bOffset = 0
+        foreach ($p in $bodyParts) {
+          [System.Array]::Copy($p, 0, $bodyBytes, $bOffset, $p.Length)
+          $bOffset += $p.Length
+        }
+        $contentType = "multipart/form-data; boundary=$boundary"
 
-          # Form field parts (handle to_formats specially: same field name, multiple values)
-          foreach ($fmt in $ToFormats) {
-            $part = "--$boundary$LF" +
-              "Content-Disposition: form-data; name=`"to_formats`"$LF$LF" +
-              "$($formatApiMap[$fmt])$LF"
-            $bodyParts.Add($enc.GetBytes($part))
-          }
-
-          $singleFields = @{
-            'image_export_mode'       = $ImageExportMode
-            'do_ocr'                  = $EnableOcr.ToString().ToLower()
-            'force_ocr'               = $ForceOcr.ToString().ToLower()
-            'ocr_engine'              = $OcrEngine
-            'pdf_backend'             = $PdfBackend
-            'table_mode'              = $TableMode
-            'pipeline'                = $PipelineType
-            'abort_on_error'          = $AbortOnError.ToString().ToLower()
-            'do_code_enrichment'      = $EnableCodeEnrichment.ToString().ToLower()
-            'do_formula_enrichment'   = $EnableFormulaEnrichment.ToString().ToLower()
-            'do_picture_classification' = $EnablePictureClassification.ToString().ToLower()
-            'do_picture_description'  = $EnablePictureDescription.ToString().ToLower()
-          }
-
-          foreach ($key in $singleFields.Keys) {
-            $part = "--$boundary$LF" +
-              "Content-Disposition: form-data; name=`"$key`"$LF$LF" +
-              "$($singleFields[$key])$LF"
-            $bodyParts.Add($enc.GetBytes($part))
-          }
-
-          # Closing boundary
-          $bodyParts.Add($enc.GetBytes("--$boundary--$LF"))
-
-          # Merge all parts into single byte array
-          $totalLen = 0
-          foreach ($p in $bodyParts) { $totalLen += $p.Length }
-          $bodyBytes = [byte[]]::new($totalLen)
-          $offset = 0
-          foreach ($p in $bodyParts) {
-            [System.Array]::Copy($p, 0, $bodyBytes, $offset, $p.Length)
-            $offset += $p.Length
-          }
-
-          $contentType = "multipart/form-data; boundary=$boundary"
-
-          # Use Invoke-WebRequest (not Invoke-RestMethod) to get raw bytes,
-          # then decode as UTF-8 manually. PS 5.1's auto-parsing uses system
-          # default encoding (Windows-1252) which corrupts umlauts.
-          $webResponse = Invoke-WebRequest -Uri $convertEndpoint -Method Post `
-            -ContentType $contentType -Body $bodyBytes `
-            -TimeoutSec $TimeoutSec -ErrorAction Stop -UseBasicParsing
-
-          if ($webResponse.RawContentStream) {
-            # Best path: decode raw bytes as UTF-8
-            $ms = $webResponse.RawContentStream
-            $ms.Position = 0
-            $reader = [System.IO.StreamReader]::new($ms, [System.Text.Encoding]::UTF8)
-            $responseText = $reader.ReadToEnd()
-            $reader.Dispose()
+        # ---- Helper: send multipart and get response text (UTF-8 safe) ----
+        # Used by both sync and async submit
+        function Send-MultipartRequest {
+          param([string]$Uri, [byte[]]$Body, [string]$CT, [int]$Timeout)
+          if ($useDotNetHttp) {
+            $form2 = [System.Net.Http.MultipartFormDataContent]::new()
+            $fc2 = [System.Net.Http.ByteArrayContent]::new($Body)
+            $fc2.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('multipart/form-data')
+            # We built the body manually, so use ByteArrayContent directly
+            $rawContent = [System.Net.Http.ByteArrayContent]::new($Body)
+            $rawContent.Headers.Remove('Content-Type') | Out-Null
+            $rawContent.Headers.TryAddWithoutValidation('Content-Type', $CT) | Out-Null
+            $form2.Dispose()
+            $postTask2 = $httpClient.PostAsync($Uri, $rawContent)
+            if (-not $postTask2.Wait([int]($Timeout * 1000))) {
+              throw "HTTP request timed out after ${Timeout}s"
+            }
+            $resp2 = $postTask2.Result
+            $readTask2 = $resp2.Content.ReadAsStringAsync()
+            $readTask2.Wait(30000) | Out-Null
+            $respText = $readTask2.Result
+            if (-not $resp2.IsSuccessStatusCode) {
+              throw "HTTP $([int]$resp2.StatusCode) $($resp2.ReasonPhrase): $($respText.Substring(0, [math]::Min(500, $respText.Length)))"
+            }
+            return $respText
           }
           else {
-            # Fallback: re-encode Content string through UTF-8
-            $rawBytes = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($webResponse.Content)
-            $responseText = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+            $wr = Invoke-WebRequest -Uri $Uri -Method Post -ContentType $CT -Body $Body `
+              -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
+            if ($wr.RawContentStream) {
+              $ms2 = $wr.RawContentStream; $ms2.Position = 0
+              $rd2 = [System.IO.StreamReader]::new($ms2, [System.Text.Encoding]::UTF8)
+              $txt = $rd2.ReadToEnd(); $rd2.Dispose()
+              return $txt
+            }
+            else {
+              $rb = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr.Content)
+              return [System.Text.Encoding]::UTF8.GetString($rb)
+            }
           }
-          $responseContent = $responseText | ConvertFrom-Json
+        }
+
+        # ---- Helper: GET request with UTF-8 response ----
+        function Get-Utf8Response {
+          param([string]$Uri, [int]$Timeout)
+          if ($useDotNetHttp) {
+            $getTask = $httpClient.GetAsync($Uri)
+            if (-not $getTask.Wait([int]($Timeout * 1000))) {
+              throw "HTTP GET timed out after ${Timeout}s"
+            }
+            $resp3 = $getTask.Result
+            $readTask3 = $resp3.Content.ReadAsStringAsync()
+            $readTask3.Wait(30000) | Out-Null
+            $txt3 = $readTask3.Result
+            if (-not $resp3.IsSuccessStatusCode) {
+              throw "HTTP $([int]$resp3.StatusCode): $($txt3.Substring(0, [math]::Min(500, $txt3.Length)))"
+            }
+            return $txt3
+          }
+          else {
+            $wr3 = Invoke-WebRequest -Uri $Uri -Method Get -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
+            if ($wr3.RawContentStream) {
+              $ms3 = $wr3.RawContentStream; $ms3.Position = 0
+              $rd3 = [System.IO.StreamReader]::new($ms3, [System.Text.Encoding]::UTF8)
+              $txt3 = $rd3.ReadToEnd(); $rd3.Dispose()
+              return $txt3
+            }
+            else {
+              $rb3 = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr3.Content)
+              return [System.Text.Encoding]::UTF8.GetString($rb3)
+            }
+          }
+        }
+
+        if ($useAsync) {
+          # ---- ASYNC path: submit, poll, fetch result ----
+          $submitText = Send-MultipartRequest -Uri $asyncEndpoint -Body $bodyBytes -CT $contentType -Timeout 60
+          $taskInfo = $submitText | ConvertFrom-Json
+          $taskId = $taskInfo.task_id
+
+          if (-not $taskId) {
+            throw "Async submit did not return a task_id. Response: $($submitText.Substring(0, [math]::Min(300, $submitText.Length)))"
+          }
+
+          # Poll until done
+          $pollInterval = 5
+          $pollDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+          $taskStatus = $taskInfo.task_status
+
+          while ($taskStatus -notin @('success', 'failure')) {
+            if ([DateTime]::UtcNow -gt $pollDeadline) {
+              throw "Async conversion timed out after ${TimeoutSec}s (task_id: $taskId, last status: $taskStatus)"
+            }
+            Start-Sleep -Seconds $pollInterval
+            $pollText = Get-Utf8Response -Uri "$pollEndpoint/$taskId" -Timeout 30
+            $pollResult = $pollText | ConvertFrom-Json
+            $taskStatus = $pollResult.task_status
+
+            # Update progress with polling info
+            $elapsedFile = $fileStart.Elapsed
+            Write-Progress -Activity "Docling Conversion" `
+              -Status "[$current/$totalFiles] $($file.Name) - converting... ($([math]::Round($elapsedFile.TotalSeconds))s, status: $taskStatus)" `
+              -PercentComplete $pctComplete
+          }
+
+          if ($taskStatus -eq 'failure') {
+            throw "Async conversion failed on server (task_id: $taskId)"
+          }
+
+          # Fetch result
+          $resultText = Get-Utf8Response -Uri "$resultEndpoint/$taskId" -Timeout 60
+          $responseContent = $resultText | ConvertFrom-Json
+        }
+        else {
+          # ---- SYNC path: direct POST, wait for response ----
+          $syncText = Send-MultipartRequest -Uri $convertEndpoint -Body $bodyBytes -CT $contentType -Timeout $TimeoutSec
+          $responseContent = $syncText | ConvertFrom-Json
         }
 
         $convertSuccess = $true
@@ -703,7 +769,10 @@ function Invoke-DoclingConversion {
       }
       catch {
         $errorText = $_.Exception.Message
-        if ($useDotNetHttp -and $form) { try { $form.Dispose() } catch {} }
+        # Provide helpful hint for 504 errors
+        if ($errorText -match '504') {
+          $errorText += " [HINT: A reverse proxy is timing out. The Docling async endpoint (/v1/convert/file/async) would avoid this, but may not be available on your server version.]"
+        }
         if ($attempt -le $RetryCount) {
           $waitSec = [math]::Pow(2, $attempt)
           Write-Warning "[Invoke-DoclingConversion] Attempt $attempt failed for '$($file.Name)': $errorText. Retrying in ${waitSec}s..."
