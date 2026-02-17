@@ -190,8 +190,8 @@ function Invoke-DoclingConversion {
     [ValidateRange(1, 20)]
     [int]$MaxConcurrency = 1,
 
-    [ValidateRange(30, 3600)]
-    [int]$TimeoutSec = 300,
+    [ValidateRange(30, 7200)]
+    [int]$TimeoutSec = 900,
 
     [ValidateRange(0, 10)]
     [int]$RetryCount = 3,

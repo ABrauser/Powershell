@@ -1411,6 +1411,7 @@ $themeCss
       <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem;cursor:pointer"><input type="checkbox" id="dl-skip" checked onchange="dlBuildCommand()" style="accent-color:var(--success)"> <strong>Skip existing</strong> <span style="font-size:0.72rem;color:var(--text-muted)">(bereits konvertierte Dateien &uuml;berspringen)</span></label>
       <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem;cursor:pointer"><input type="checkbox" id="dl-abort" onchange="dlBuildCommand()" style="accent-color:var(--danger)"> <strong>Abort on Error</strong> <span style="font-size:0.72rem;color:var(--text-muted)">(bei Fehler sofort abbrechen)</span></label>
       <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem"><strong>Retries</strong> <input type="number" id="dl-retries" value="3" min="0" max="10" step="1" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="dlBuildCommand()"> <span style="font-size:0.72rem;color:var(--text-muted)">(Wiederholungen bei Fehler)</span></label>
+      <label style="font-size:0.82rem;display:flex;align-items:center;gap:0.4rem"><strong>Timeout</strong> <input type="number" id="dl-timeout" value="900" min="30" max="7200" step="30" style="width:4.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="dlBuildCommand()"> <span style="font-size:0.72rem;color:var(--text-muted)">Sek. pro Datei (grosse PDFs: 900+)</span></label>
     </div>
 
     <div style="margin-top:1rem">
@@ -3372,6 +3373,7 @@ function dlBuildCommand() {
   var skip = document.getElementById('dl-skip') && document.getElementById('dl-skip').checked;
   var abort = document.getElementById('dl-abort') && document.getElementById('dl-abort').checked;
   var retries = parseInt((document.getElementById('dl-retries') || {}).value || '3', 10);
+  var timeout = parseInt((document.getElementById('dl-timeout') || {}).value || '900', 10);
   var codeE = document.getElementById('dl-code-enrich') && document.getElementById('dl-code-enrich').checked;
   var formulaE = document.getElementById('dl-formula-enrich') && document.getElementById('dl-formula-enrich').checked;
   var picC = document.getElementById('dl-pic-class') && document.getElementById('dl-pic-class').checked;
@@ -3404,6 +3406,7 @@ function dlBuildCommand() {
   if (picD) extras += ' -EnablePictureDescription';
   if (!skip) extras += ' -Force';
   if (retries !== 3) extras += ' -RetryCount ' + retries;
+  if (timeout !== 900) extras += ' -TimeoutSec ' + timeout;
   if (extras) cmd += ' ' + bt + '\n ' + extras.trim();
 
   if (el) el.textContent = cmd;
@@ -3472,6 +3475,7 @@ function dlSaveSettings() {
     s.output = (document.getElementById('dl-output') || {}).value || '';
     s.staging = (document.getElementById('cmd-dest') || {}).value || '';
     s.retries = (document.getElementById('dl-retries') || {}).value || '3';
+    s.timeout = (document.getElementById('dl-timeout') || {}).value || '900';
     // Checkboxes
     ['dl-ocr','dl-forceocr','dl-skip','dl-abort','dl-code-enrich','dl-formula-enrich','dl-pic-class','dl-pic-desc'].forEach(function(id) {
       var el = document.getElementById(id);
@@ -3503,6 +3507,7 @@ function dlLoadSettings() {
     if (s.input) { var e3 = document.getElementById('dl-input'); if (e3) e3.value = s.input; }
     if (s.output) { var e4 = document.getElementById('dl-output'); if (e4) e4.value = s.output; }
     if (s.retries) { var e5 = document.getElementById('dl-retries'); if (e5) e5.value = s.retries; }
+    if (s.timeout) { var e6 = document.getElementById('dl-timeout'); if (e6) e6.value = s.timeout; }
     // Checkboxes
     ['dl-ocr','dl-forceocr','dl-skip','dl-abort','dl-code-enrich','dl-formula-enrich','dl-pic-class','dl-pic-desc'].forEach(function(id) {
       if (s.hasOwnProperty(id)) { var el = document.getElementById(id); if (el) el.checked = s[id]; }
