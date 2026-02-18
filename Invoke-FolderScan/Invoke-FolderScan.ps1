@@ -1113,6 +1113,16 @@ $themeCss
           <div class="legend" id="leg-conv"></div>
         </div>
       </div>
+      <div class="chart-card">
+        <h2>🔄 Pipeline-Status</h2>
+        <div class="chart-container">
+          <div style="position:relative">
+            <svg id="pie-pipe" width="420" height="420" viewBox="-210 -210 420 420"></svg>
+            <div class="pie-tooltip" id="tip-pipe"></div>
+          </div>
+          <div class="legend" id="leg-pipe"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1729,8 +1739,22 @@ function updatePieCharts(filtered) {
     { label: 'Nicht konvertierbar', count: cNo, percent: Math.round((cNo / total) * 1000) / 10 }
   ];
 
+  // Build pipeline distribution
+  var pOffen = 0, pKopiert = 0, pVeredelt = 0;
+  filtered.forEach(function(f) {
+    if (f.pipeline === 'veredelt') pVeredelt++;
+    else if (f.pipeline === 'kopiert') pKopiert++;
+    else pOffen++;
+  });
+  var dynPipeData = [
+    { label: 'Offen', count: pOffen, percent: Math.round((pOffen / total) * 1000) / 10 },
+    { label: 'Kopiert', count: pKopiert, percent: Math.round((pKopiert / total) * 1000) / 10 },
+    { label: 'Veredelt', count: pVeredelt, percent: Math.round((pVeredelt / total) * 1000) / 10 }
+  ];
+
   drawPie('pie-ext','tip-ext','leg-ext', top10, CC, 180, 'ext');
   drawPie('pie-conv','tip-conv','leg-conv', dynConvData, ['#4ade80','#475569'], 180, 'conv');
+  drawPie('pie-pipe','tip-pipe','leg-pipe', dynPipeData, ['#94a3b8','#38bdf8','#4ade80'], 180, 'pipe');
 }
 
 function scrollToTable() {
@@ -1918,11 +1942,13 @@ function drawPie(svgId, tipId, legId, data, colors, r, type) {
       toggleExt(d.label);
     }
     if (type === 'conv') toggleConv(d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
+    if (type === 'pipe') togglePipeline(d.label.toLowerCase());
   }
 
   function bindSegmentEvents(el, d) {
     if (type === 'ext') el.setAttribute('data-ext', d.label);
     if (type === 'conv') el.setAttribute('data-conv', d.label === 'Konvertierbar' ? 'Ja' : 'Nein');
+    if (type === 'pipe') el.setAttribute('data-pipe', d.label.toLowerCase());
 
     el.addEventListener('click', function() { handleSegmentToggle(d); });
     el.addEventListener('mouseenter', function() {
@@ -2127,8 +2153,15 @@ function updateOtherExtButton() {
   });
 }
 
+var pipeData = [
+  { label: 'Offen', count: pipelineStats.offen, percent: Math.round((pipelineStats.offen / ($totalFiles || 1)) * 1000) / 10 },
+  { label: 'Kopiert', count: pipelineStats.kopiert, percent: Math.round((pipelineStats.kopiert / ($totalFiles || 1)) * 1000) / 10 },
+  { label: 'Veredelt', count: pipelineStats.veredelt, percent: Math.round((pipelineStats.veredelt / ($totalFiles || 1)) * 1000) / 10 }
+];
+
 drawPie('pie-ext','tip-ext','leg-ext', extData, CC, 180, 'ext');
 drawPie('pie-conv','tip-conv','leg-conv', convData, ['#4ade80','#475569'], 180, 'conv');
+drawPie('pie-pipe','tip-pipe','leg-pipe', pipeData, ['#94a3b8','#38bdf8','#4ade80'], 180, 'pipe');
 
 // === UNIFIED FILTER BUTTONS ===
 (function(){
@@ -3054,7 +3087,7 @@ var dlAvgPerFile = $doclingAvgPerFile;
 function dlBuildTree() {
   var root = scanRoot;
   var folders = {};
-  folders[root] = { path: root, name: root.split('\\').pop() || root, children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0 };
+  folders[root] = { path: root, name: root.split('\\').pop() || root, children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0, veredeltCount: 0, totalVeredelt: 0 };
 
   allFiles.forEach(function(f) {
     var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : root;
@@ -3065,7 +3098,7 @@ function dlBuildTree() {
       for (var i = 0; i < parts.length; i++) {
         var next = current + '\\' + parts[i];
         if (!folders[next]) {
-          folders[next] = { path: next, name: parts[i], children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0 };
+          folders[next] = { path: next, name: parts[i], children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0, veredeltCount: 0, totalVeredelt: 0 };
           folders[current].children[next] = true;
         }
         current = next;
@@ -3074,6 +3107,7 @@ function dlBuildTree() {
     folders[dir].fileCount++;
     folders[dir].sizeBytes += f.sizeBytes;
     if (f.convertible) folders[dir].convCount++;
+    if (f.pipeline === 'veredelt') folders[dir].veredeltCount++;
   });
 
   function propagate(path) {
@@ -3081,11 +3115,13 @@ function dlBuildTree() {
     node.totalFiles = node.fileCount;
     node.totalSize = node.sizeBytes;
     node.totalConv = node.convCount;
+    node.totalVeredelt = node.veredeltCount;
     Object.keys(node.children).forEach(function(ck) {
       propagate(ck);
       node.totalFiles += folders[ck].totalFiles;
       node.totalSize += folders[ck].totalSize;
       node.totalConv += folders[ck].totalConv;
+      node.totalVeredelt += folders[ck].totalVeredelt;
     });
   }
   propagate(root);
@@ -3135,6 +3171,33 @@ function dlCreateNode(path, isRoot) {
   count.className = 'ft-count';
   count.textContent = node.totalFiles + ' Dateien \u00B7 ' + fmtSize(node.totalSize);
   row.appendChild(count);
+
+  // Conversion status badge
+  var convBadge = document.createElement('span');
+  convBadge.style.cssText = 'font-size:0.72rem;margin-left:0.5rem;padding:0.1rem 0.45rem;border-radius:6px;white-space:nowrap;font-weight:600';
+  var convTotal = node.totalConv;
+  var convDone = node.totalVeredelt;
+  if (convTotal > 0) {
+    if (convDone >= convTotal) {
+      convBadge.textContent = '\u2714 ' + convDone + '/' + convTotal;
+      convBadge.style.background = 'rgba(74,222,128,0.18)';
+      convBadge.style.color = '#4ade80';
+    } else if (convDone > 0) {
+      convBadge.textContent = '\u25CF ' + convDone + '/' + convTotal;
+      convBadge.style.background = 'rgba(251,191,36,0.18)';
+      convBadge.style.color = '#fbbf24';
+    } else {
+      convBadge.textContent = '\u2014 0/' + convTotal;
+      convBadge.style.background = 'rgba(148,163,184,0.15)';
+      convBadge.style.color = '#94a3b8';
+    }
+  } else {
+    convBadge.textContent = '\u2014';
+    convBadge.style.background = 'rgba(148,163,184,0.1)';
+    convBadge.style.color = '#64748b';
+  }
+  convBadge.title = convDone + ' von ' + convTotal + ' konvertierbaren Dateien veredelt';
+  row.appendChild(convBadge);
 
   div.appendChild(row);
 
