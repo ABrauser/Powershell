@@ -557,6 +557,8 @@ function Invoke-DoclingConversion {
 
   $batchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
+  try {
+
   foreach ($file in $filesToConvert) {
     $current++
     $pctComplete = [math]::Round(($current / $totalFiles) * 100)
@@ -650,26 +652,29 @@ function Invoke-DoclingConversion {
         function Send-MultipartRequest {
           param([string]$Uri, [byte[]]$Body, [string]$CT, [int]$Timeout)
           if ($useDotNetHttp) {
-            $form2 = [System.Net.Http.MultipartFormDataContent]::new()
-            $fc2 = [System.Net.Http.ByteArrayContent]::new($Body)
-            $fc2.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('multipart/form-data')
-            # We built the body manually, so use ByteArrayContent directly
-            $rawContent = [System.Net.Http.ByteArrayContent]::new($Body)
-            $rawContent.Headers.Remove('Content-Type') | Out-Null
-            $rawContent.Headers.TryAddWithoutValidation('Content-Type', $CT) | Out-Null
-            $form2.Dispose()
-            $postTask2 = $httpClient.PostAsync($Uri, $rawContent)
-            if (-not $postTask2.Wait([int]($Timeout * 1000))) {
-              throw "HTTP request timed out after ${Timeout}s"
+            $rawContent = $null; $postTask2 = $null; $resp2 = $null
+            try {
+              $rawContent = [System.Net.Http.ByteArrayContent]::new($Body)
+              $rawContent.Headers.Remove('Content-Type') | Out-Null
+              $rawContent.Headers.TryAddWithoutValidation('Content-Type', $CT) | Out-Null
+              $postTask2 = $httpClient.PostAsync($Uri, $rawContent)
+              if (-not $postTask2.Wait([int]($Timeout * 1000))) {
+                throw "HTTP request timed out after ${Timeout}s"
+              }
+              $resp2 = $postTask2.Result
+              $readTask2 = $resp2.Content.ReadAsStringAsync()
+              $readTask2.Wait(30000) | Out-Null
+              $respText = $readTask2.Result
+              if (-not $resp2.IsSuccessStatusCode) {
+                throw "HTTP $([int]$resp2.StatusCode) $($resp2.ReasonPhrase): $($respText.Substring(0, [math]::Min(500, $respText.Length)))"
+              }
+              return $respText
             }
-            $resp2 = $postTask2.Result
-            $readTask2 = $resp2.Content.ReadAsStringAsync()
-            $readTask2.Wait(30000) | Out-Null
-            $respText = $readTask2.Result
-            if (-not $resp2.IsSuccessStatusCode) {
-              throw "HTTP $([int]$resp2.StatusCode) $($resp2.ReasonPhrase): $($respText.Substring(0, [math]::Min(500, $respText.Length)))"
+            finally {
+              if ($resp2)      { try { $resp2.Dispose() } catch {} }
+              if ($postTask2)  { try { $postTask2.Dispose() } catch {} }
+              if ($rawContent) { try { $rawContent.Dispose() } catch {} }
             }
-            return $respText
           }
           else {
             $wr = Invoke-WebRequest -Uri $Uri -Method Post -ContentType $CT -Body $Body `
@@ -691,18 +696,25 @@ function Invoke-DoclingConversion {
         function Get-Utf8Response {
           param([string]$Uri, [int]$Timeout)
           if ($useDotNetHttp) {
-            $getTask = $httpClient.GetAsync($Uri)
-            if (-not $getTask.Wait([int]($Timeout * 1000))) {
-              throw "HTTP GET timed out after ${Timeout}s"
+            $getTask = $null; $resp3 = $null
+            try {
+              $getTask = $httpClient.GetAsync($Uri)
+              if (-not $getTask.Wait([int]($Timeout * 1000))) {
+                throw "HTTP GET timed out after ${Timeout}s"
+              }
+              $resp3 = $getTask.Result
+              $readTask3 = $resp3.Content.ReadAsStringAsync()
+              $readTask3.Wait(30000) | Out-Null
+              $txt3 = $readTask3.Result
+              if (-not $resp3.IsSuccessStatusCode) {
+                throw "HTTP $([int]$resp3.StatusCode): $($txt3.Substring(0, [math]::Min(500, $txt3.Length)))"
+              }
+              return $txt3
             }
-            $resp3 = $getTask.Result
-            $readTask3 = $resp3.Content.ReadAsStringAsync()
-            $readTask3.Wait(30000) | Out-Null
-            $txt3 = $readTask3.Result
-            if (-not $resp3.IsSuccessStatusCode) {
-              throw "HTTP $([int]$resp3.StatusCode): $($txt3.Substring(0, [math]::Min(500, $txt3.Length)))"
+            finally {
+              if ($resp3)    { try { $resp3.Dispose() } catch {} }
+              if ($getTask)  { try { $getTask.Dispose() } catch {} }
             }
-            return $txt3
           }
           else {
             $wr3 = Invoke-WebRequest -Uri $Uri -Method Get -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
@@ -906,9 +918,12 @@ function Invoke-DoclingConversion {
   Write-Progress -Activity "Docling Conversion" -Completed
   $batchStopwatch.Stop()
 
-  # Cleanup HttpClient (PS 7+ only)
-  if ($httpClient) { try { $httpClient.Dispose() } catch {} }
-  if ($httpHandler) { try { $httpHandler.Dispose() } catch {} }
+  } # end try
+  finally {
+    # Cleanup HttpClient (PS 7+ only) - always runs, even on exceptions
+    if ($httpClient) { try { $httpClient.Dispose() } catch {} }
+    if ($httpHandler) { try { $httpHandler.Dispose() } catch {} }
+  }
 
   # ================================================================
   # WRITE LOGS
