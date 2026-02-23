@@ -383,7 +383,8 @@ function Invoke-FolderScan {
       if ($ErgebnisPath -and $relativePath) {
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($relativePath)
         $relDir = [System.IO.Path]::GetDirectoryName($relativePath)
-        $mdPath = Join-Path $ErgebnisPath (Join-Path $relDir "$baseName.md")
+        $relMdPath = if ([string]::IsNullOrEmpty($relDir)) { "$baseName.md" } else { Join-Path $relDir "$baseName.md" }
+        $mdPath = Join-Path $ErgebnisPath $relMdPath
         if (Test-Path $mdPath) {
           $status = 'veredelt'
         }

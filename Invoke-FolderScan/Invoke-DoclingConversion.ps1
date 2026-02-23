@@ -406,7 +406,7 @@ function Invoke-DoclingConversion {
         foreach ($folder in $Folders) {
           $folderNorm = $folder.TrimStart('\').TrimEnd('\')
           if ($relPath.StartsWith($folderNorm + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
-              $relPath.StartsWith($folderNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relPath.StartsWith($folderNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
             $filteredFiles += $f
             break
           }
@@ -439,9 +439,9 @@ function Invoke-DoclingConversion {
     '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.wma'
   )
   $unsupported = @($filesToProcess | Where-Object {
-    $ext = [System.IO.Path]::GetExtension($_.FullPath).ToLower()
-    $supportedExtensions -notcontains $ext
-  })
+      $ext = [System.IO.Path]::GetExtension($_.FullPath).ToLower()
+      $supportedExtensions -notcontains $ext
+    })
   if ($unsupported.Count -gt 0) {
     $skippedExts = ($unsupported | ForEach-Object { [System.IO.Path]::GetExtension($_.FullPath).ToLower() } | Sort-Object -Unique) -join ', '
     Write-Warning "[Invoke-DoclingConversion] Skipping $($unsupported.Count) file(s) with unsupported format(s): $skippedExts"
@@ -449,9 +449,9 @@ function Invoke-DoclingConversion {
       Write-Host "  [SKIP] $($u.Name) (unsupported format)" -ForegroundColor DarkYellow
     }
     $filesToProcess = @($filesToProcess | Where-Object {
-      $ext = [System.IO.Path]::GetExtension($_.FullPath).ToLower()
-      $supportedExtensions -contains $ext
-    })
+        $ext = [System.IO.Path]::GetExtension($_.FullPath).ToLower()
+        $supportedExtensions -contains $ext
+      })
   }
 
   Write-Host "[Invoke-DoclingConversion] Output:       $OutputPath" -ForegroundColor Cyan
@@ -485,11 +485,13 @@ function Invoke-DoclingConversion {
       $relDir = [System.IO.Path]::GetDirectoryName($relPath)
       $outExt = $formatExtMap[$primaryFormat]
 
+      $relFile = if ([string]::IsNullOrEmpty($relDir)) { "$baseName$outExt" } else { Join-Path $relDir "$baseName$outExt" }
+
       if ($multiFormat) {
-        $outFile = Join-Path $OutputPath (Join-Path $primaryFormat (Join-Path $relDir "$baseName$outExt"))
+        $outFile = Join-Path $OutputPath (Join-Path $primaryFormat $relFile)
       }
       else {
-        $outFile = Join-Path $OutputPath (Join-Path $relDir "$baseName$outExt")
+        $outFile = Join-Path $OutputPath $relFile
       }
 
       if (Test-Path $outFile) {
@@ -559,364 +561,366 @@ function Invoke-DoclingConversion {
 
   try {
 
-  foreach ($file in $filesToConvert) {
-    $current++
-    $pctComplete = [math]::Round(($current / $totalFiles) * 100)
-    $fileStart = [System.Diagnostics.Stopwatch]::StartNew()
+    foreach ($file in $filesToConvert) {
+      $current++
+      $pctComplete = [math]::Round(($current / $totalFiles) * 100)
+      $fileStart = [System.Diagnostics.Stopwatch]::StartNew()
 
-    # Progress bar with ETA
-    $eta = ''
-    if ($converted -gt 0) {
-      $avgSec = $totalConvertTime / $converted
-      $remaining = ($totalFiles - $current + 1) * $avgSec
-      $etaTs = [TimeSpan]::FromSeconds([math]::Max(0, $remaining))
-      $elapsed = $batchStopwatch.Elapsed
-      $eta = " | ETA: $($etaTs.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec,1))s/file"
-    }
+      # Progress bar with ETA
+      $eta = ''
+      if ($converted -gt 0) {
+        $avgSec = $totalConvertTime / $converted
+        $remaining = ($totalFiles - $current + 1) * $avgSec
+        $etaTs = [TimeSpan]::FromSeconds([math]::Max(0, $remaining))
+        $elapsed = $batchStopwatch.Elapsed
+        $eta = " | ETA: $($etaTs.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec,1))s/file"
+      }
 
-    Write-Progress -Activity "Docling Conversion" `
-      -Status "[$current/$totalFiles] $($file.Name) ($($file.SizeMB) MB)$eta" `
-      -PercentComplete $pctComplete
+      Write-Progress -Activity "Docling Conversion" `
+        -Status "[$current/$totalFiles] $($file.Name) ($($file.SizeMB) MB)$eta" `
+        -PercentComplete $pctComplete
 
-    $convertSuccess = $false
-    $errorText = ''
-    $responseContent = $null
+      $convertSuccess = $false
+      $errorText = ''
+      $responseContent = $null
 
-    for ($attempt = 1; $attempt -le ($RetryCount + 1); $attempt++) {
-      try {
-        if ($current -eq 1 -and $attempt -eq 1) {
-          $targetEp = if ($useAsync) { $asyncEndpoint } else { $convertEndpoint }
-          Write-Host "  [INFO] Sending first file to API ($targetEp)..." -ForegroundColor DarkGray
-        }
+      for ($attempt = 1; $attempt -le ($RetryCount + 1); $attempt++) {
+        try {
+          if ($current -eq 1 -and $attempt -eq 1) {
+            $targetEp = if ($useAsync) { $asyncEndpoint } else { $convertEndpoint }
+            Write-Host "  [INFO] Sending first file to API ($targetEp)..." -ForegroundColor DarkGray
+          }
 
-        $fileBytes = [System.IO.File]::ReadAllBytes($file.FullPath)
-        $fileName = [System.IO.Path]::GetFileName($file.FullPath)
+          $fileBytes = [System.IO.File]::ReadAllBytes($file.FullPath)
+          $fileName = [System.IO.Path]::GetFileName($file.FullPath)
 
-        # ---- Build multipart body (shared by all code paths) ----
-        $boundary = [System.Guid]::NewGuid().ToString('N')
-        $LF = "`r`n"
-        $enc = [System.Text.Encoding]::UTF8
-        $bodyParts = [System.Collections.Generic.List[byte[]]]::new()
+          # ---- Build multipart body (shared by all code paths) ----
+          $boundary = [System.Guid]::NewGuid().ToString('N')
+          $LF = "`r`n"
+          $enc = [System.Text.Encoding]::UTF8
+          $bodyParts = [System.Collections.Generic.List[byte[]]]::new()
 
-        # File part
-        $fileHeader = "--$boundary$LF" +
+          # File part
+          $fileHeader = "--$boundary$LF" +
           "Content-Disposition: form-data; name=`"files`"; filename=`"$fileName`"$LF" +
           "Content-Type: application/octet-stream$LF$LF"
-        $bodyParts.Add($enc.GetBytes($fileHeader))
-        $bodyParts.Add($fileBytes)
-        $bodyParts.Add($enc.GetBytes($LF))
+          $bodyParts.Add($enc.GetBytes($fileHeader))
+          $bodyParts.Add($fileBytes)
+          $bodyParts.Add($enc.GetBytes($LF))
 
-        # to_formats (multiple values with same field name)
-        foreach ($fmt in $ToFormats) {
-          $part = "--$boundary$LF" +
+          # to_formats (multiple values with same field name)
+          foreach ($fmt in $ToFormats) {
+            $part = "--$boundary$LF" +
             "Content-Disposition: form-data; name=`"to_formats`"$LF$LF" +
             "$($formatApiMap[$fmt])$LF"
-          $bodyParts.Add($enc.GetBytes($part))
-        }
+            $bodyParts.Add($enc.GetBytes($part))
+          }
 
-        # Single-value form fields
-        $singleFields = [ordered]@{
-          'image_export_mode'         = $ImageExportMode
-          'do_ocr'                    = $EnableOcr.ToString().ToLower()
-          'force_ocr'                 = $ForceOcr.ToString().ToLower()
-          'ocr_engine'                = $OcrEngine
-          'pdf_backend'               = $PdfBackend
-          'table_mode'                = $TableMode
-          'pipeline'                  = $PipelineType
-          'abort_on_error'            = $AbortOnError.ToString().ToLower()
-          'do_code_enrichment'        = $EnableCodeEnrichment.ToString().ToLower()
-          'do_formula_enrichment'     = $EnableFormulaEnrichment.ToString().ToLower()
-          'do_picture_classification' = $EnablePictureClassification.ToString().ToLower()
-          'do_picture_description'    = $EnablePictureDescription.ToString().ToLower()
-        }
-        foreach ($key in $singleFields.Keys) {
-          $part = "--$boundary$LF" +
+          # Single-value form fields
+          $singleFields = [ordered]@{
+            'image_export_mode'         = $ImageExportMode
+            'do_ocr'                    = $EnableOcr.ToString().ToLower()
+            'force_ocr'                 = $ForceOcr.ToString().ToLower()
+            'ocr_engine'                = $OcrEngine
+            'pdf_backend'               = $PdfBackend
+            'table_mode'                = $TableMode
+            'pipeline'                  = $PipelineType
+            'abort_on_error'            = $AbortOnError.ToString().ToLower()
+            'do_code_enrichment'        = $EnableCodeEnrichment.ToString().ToLower()
+            'do_formula_enrichment'     = $EnableFormulaEnrichment.ToString().ToLower()
+            'do_picture_classification' = $EnablePictureClassification.ToString().ToLower()
+            'do_picture_description'    = $EnablePictureDescription.ToString().ToLower()
+          }
+          foreach ($key in $singleFields.Keys) {
+            $part = "--$boundary$LF" +
             "Content-Disposition: form-data; name=`"$key`"$LF$LF" +
             "$($singleFields[$key])$LF"
-          $bodyParts.Add($enc.GetBytes($part))
-        }
-        $bodyParts.Add($enc.GetBytes("--$boundary--$LF"))
-
-        # Merge into single byte array
-        $totalLen = 0; foreach ($p in $bodyParts) { $totalLen += $p.Length }
-        $bodyBytes = [byte[]]::new($totalLen)
-        $bOffset = 0
-        foreach ($p in $bodyParts) {
-          [System.Array]::Copy($p, 0, $bodyBytes, $bOffset, $p.Length)
-          $bOffset += $p.Length
-        }
-        $contentType = "multipart/form-data; boundary=$boundary"
-
-        # ---- Helper: send multipart and get response text (UTF-8 safe) ----
-        # Used by both sync and async submit
-        function Send-MultipartRequest {
-          param([string]$Uri, [byte[]]$Body, [string]$CT, [int]$Timeout)
-          if ($useDotNetHttp) {
-            $rawContent = $null; $postTask2 = $null; $resp2 = $null
-            try {
-              $rawContent = [System.Net.Http.ByteArrayContent]::new($Body)
-              $rawContent.Headers.Remove('Content-Type') | Out-Null
-              $rawContent.Headers.TryAddWithoutValidation('Content-Type', $CT) | Out-Null
-              $postTask2 = $httpClient.PostAsync($Uri, $rawContent)
-              if (-not $postTask2.Wait([int]($Timeout * 1000))) {
-                throw "HTTP request timed out after ${Timeout}s"
-              }
-              $resp2 = $postTask2.Result
-              $readTask2 = $resp2.Content.ReadAsStringAsync()
-              $readTask2.Wait(30000) | Out-Null
-              $respText = $readTask2.Result
-              if (-not $resp2.IsSuccessStatusCode) {
-                throw "HTTP $([int]$resp2.StatusCode) $($resp2.ReasonPhrase): $($respText.Substring(0, [math]::Min(500, $respText.Length)))"
-              }
-              return $respText
-            }
-            finally {
-              if ($resp2)      { try { $resp2.Dispose() } catch {} }
-              if ($postTask2)  { try { $postTask2.Dispose() } catch {} }
-              if ($rawContent) { try { $rawContent.Dispose() } catch {} }
-            }
+            $bodyParts.Add($enc.GetBytes($part))
           }
-          else {
-            $wr = Invoke-WebRequest -Uri $Uri -Method Post -ContentType $CT -Body $Body `
-              -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
-            if ($wr.RawContentStream) {
-              $ms2 = $wr.RawContentStream; $ms2.Position = 0
-              $rd2 = [System.IO.StreamReader]::new($ms2, [System.Text.Encoding]::UTF8)
-              $txt = $rd2.ReadToEnd(); $rd2.Dispose()
-              return $txt
+          $bodyParts.Add($enc.GetBytes("--$boundary--$LF"))
+
+          # Merge into single byte array
+          $totalLen = 0; foreach ($p in $bodyParts) { $totalLen += $p.Length }
+          $bodyBytes = [byte[]]::new($totalLen)
+          $bOffset = 0
+          foreach ($p in $bodyParts) {
+            [System.Array]::Copy($p, 0, $bodyBytes, $bOffset, $p.Length)
+            $bOffset += $p.Length
+          }
+          $contentType = "multipart/form-data; boundary=$boundary"
+
+          # ---- Helper: send multipart and get response text (UTF-8 safe) ----
+          # Used by both sync and async submit
+          function Send-MultipartRequest {
+            param([string]$Uri, [byte[]]$Body, [string]$CT, [int]$Timeout)
+            if ($useDotNetHttp) {
+              $rawContent = $null; $postTask2 = $null; $resp2 = $null
+              try {
+                $rawContent = [System.Net.Http.ByteArrayContent]::new($Body)
+                $rawContent.Headers.Remove('Content-Type') | Out-Null
+                $rawContent.Headers.TryAddWithoutValidation('Content-Type', $CT) | Out-Null
+                $postTask2 = $httpClient.PostAsync($Uri, $rawContent)
+                if (-not $postTask2.Wait([int]($Timeout * 1000))) {
+                  throw "HTTP request timed out after ${Timeout}s"
+                }
+                $resp2 = $postTask2.Result
+                $readTask2 = $resp2.Content.ReadAsStringAsync()
+                $readTask2.Wait(30000) | Out-Null
+                $respText = $readTask2.Result
+                if (-not $resp2.IsSuccessStatusCode) {
+                  throw "HTTP $([int]$resp2.StatusCode) $($resp2.ReasonPhrase): $($respText.Substring(0, [math]::Min(500, $respText.Length)))"
+                }
+                return $respText
+              }
+              finally {
+                if ($resp2) { try { $resp2.Dispose() } catch {} }
+                if ($postTask2) { try { $postTask2.Dispose() } catch {} }
+                if ($rawContent) { try { $rawContent.Dispose() } catch {} }
+              }
             }
             else {
-              $rb = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr.Content)
-              return [System.Text.Encoding]::UTF8.GetString($rb)
+              $wr = Invoke-WebRequest -Uri $Uri -Method Post -ContentType $CT -Body $Body `
+                -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
+              if ($wr.RawContentStream) {
+                $ms2 = $wr.RawContentStream; $ms2.Position = 0
+                $rd2 = [System.IO.StreamReader]::new($ms2, [System.Text.Encoding]::UTF8)
+                $txt = $rd2.ReadToEnd(); $rd2.Dispose()
+                return $txt
+              }
+              else {
+                $rb = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr.Content)
+                return [System.Text.Encoding]::UTF8.GetString($rb)
+              }
             }
           }
-        }
 
-        # ---- Helper: GET request with UTF-8 response ----
-        function Get-Utf8Response {
-          param([string]$Uri, [int]$Timeout)
-          if ($useDotNetHttp) {
-            $getTask = $null; $resp3 = $null
-            try {
-              $getTask = $httpClient.GetAsync($Uri)
-              if (-not $getTask.Wait([int]($Timeout * 1000))) {
-                throw "HTTP GET timed out after ${Timeout}s"
+          # ---- Helper: GET request with UTF-8 response ----
+          function Get-Utf8Response {
+            param([string]$Uri, [int]$Timeout)
+            if ($useDotNetHttp) {
+              $getTask = $null; $resp3 = $null
+              try {
+                $getTask = $httpClient.GetAsync($Uri)
+                if (-not $getTask.Wait([int]($Timeout * 1000))) {
+                  throw "HTTP GET timed out after ${Timeout}s"
+                }
+                $resp3 = $getTask.Result
+                $readTask3 = $resp3.Content.ReadAsStringAsync()
+                $readTask3.Wait(30000) | Out-Null
+                $txt3 = $readTask3.Result
+                if (-not $resp3.IsSuccessStatusCode) {
+                  throw "HTTP $([int]$resp3.StatusCode): $($txt3.Substring(0, [math]::Min(500, $txt3.Length)))"
+                }
+                return $txt3
               }
-              $resp3 = $getTask.Result
-              $readTask3 = $resp3.Content.ReadAsStringAsync()
-              $readTask3.Wait(30000) | Out-Null
-              $txt3 = $readTask3.Result
-              if (-not $resp3.IsSuccessStatusCode) {
-                throw "HTTP $([int]$resp3.StatusCode): $($txt3.Substring(0, [math]::Min(500, $txt3.Length)))"
+              finally {
+                if ($resp3) { try { $resp3.Dispose() } catch {} }
+                if ($getTask) { try { $getTask.Dispose() } catch {} }
               }
-              return $txt3
-            }
-            finally {
-              if ($resp3)    { try { $resp3.Dispose() } catch {} }
-              if ($getTask)  { try { $getTask.Dispose() } catch {} }
-            }
-          }
-          else {
-            $wr3 = Invoke-WebRequest -Uri $Uri -Method Get -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
-            if ($wr3.RawContentStream) {
-              $ms3 = $wr3.RawContentStream; $ms3.Position = 0
-              $rd3 = [System.IO.StreamReader]::new($ms3, [System.Text.Encoding]::UTF8)
-              $txt3 = $rd3.ReadToEnd(); $rd3.Dispose()
-              return $txt3
             }
             else {
-              $rb3 = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr3.Content)
-              return [System.Text.Encoding]::UTF8.GetString($rb3)
+              $wr3 = Invoke-WebRequest -Uri $Uri -Method Get -TimeoutSec $Timeout -ErrorAction Stop -UseBasicParsing
+              if ($wr3.RawContentStream) {
+                $ms3 = $wr3.RawContentStream; $ms3.Position = 0
+                $rd3 = [System.IO.StreamReader]::new($ms3, [System.Text.Encoding]::UTF8)
+                $txt3 = $rd3.ReadToEnd(); $rd3.Dispose()
+                return $txt3
+              }
+              else {
+                $rb3 = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($wr3.Content)
+                return [System.Text.Encoding]::UTF8.GetString($rb3)
+              }
             }
           }
-        }
 
-        if ($useAsync) {
-          # ---- ASYNC path: submit, poll, fetch result ----
-          $submitText = Send-MultipartRequest -Uri $asyncEndpoint -Body $bodyBytes -CT $contentType -Timeout 60
-          $taskInfo = $submitText | ConvertFrom-Json
-          $taskId = $taskInfo.task_id
+          if ($useAsync) {
+            # ---- ASYNC path: submit, poll, fetch result ----
+            $submitText = Send-MultipartRequest -Uri $asyncEndpoint -Body $bodyBytes -CT $contentType -Timeout 60
+            $taskInfo = $submitText | ConvertFrom-Json
+            $taskId = $taskInfo.task_id
 
-          if (-not $taskId) {
-            throw "Async submit did not return a task_id. Response: $($submitText.Substring(0, [math]::Min(300, $submitText.Length)))"
+            if (-not $taskId) {
+              throw "Async submit did not return a task_id. Response: $($submitText.Substring(0, [math]::Min(300, $submitText.Length)))"
+            }
+
+            # Poll until done
+            $pollInterval = 5
+            $pollDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+            $taskStatus = $taskInfo.task_status
+
+            while ($taskStatus -notin @('success', 'failure')) {
+              if ([DateTime]::UtcNow -gt $pollDeadline) {
+                throw "Async conversion timed out after ${TimeoutSec}s (task_id: $taskId, last status: $taskStatus)"
+              }
+              Start-Sleep -Seconds $pollInterval
+              $pollText = Get-Utf8Response -Uri "$pollEndpoint/$taskId" -Timeout 30
+              $pollResult = $pollText | ConvertFrom-Json
+              $taskStatus = $pollResult.task_status
+
+              # Update progress with polling info + ETA
+              $elapsedFile = $fileStart.Elapsed
+              $pollEta = ''
+              if ($converted -gt 0) {
+                $avgSec2 = $totalConvertTime / $converted
+                $remaining2 = ($totalFiles - $current) * $avgSec2 + [math]::Max(0, $avgSec2 - $elapsedFile.TotalSeconds)
+                $etaTs2 = [TimeSpan]::FromSeconds([math]::Max(0, $remaining2))
+                $elapsed2 = $batchStopwatch.Elapsed
+                $pollEta = " | ETA: $($etaTs2.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed2.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec2,1))s/file"
+              }
+              Write-Progress -Activity "Docling Conversion" `
+                -Status "[$current/$totalFiles] $($file.Name) - converting... ($([math]::Round($elapsedFile.TotalSeconds))s)$pollEta" `
+                -PercentComplete $pctComplete
+            }
+
+            if ($taskStatus -eq 'failure') {
+              throw "Async conversion failed on server (task_id: $taskId)"
+            }
+
+            # Fetch result
+            $resultText = Get-Utf8Response -Uri "$resultEndpoint/$taskId" -Timeout 60
+            $responseContent = $resultText | ConvertFrom-Json
+          }
+          else {
+            # ---- SYNC path: direct POST, wait for response ----
+            $syncText = Send-MultipartRequest -Uri $convertEndpoint -Body $bodyBytes -CT $contentType -Timeout $TimeoutSec
+            $responseContent = $syncText | ConvertFrom-Json
           }
 
-          # Poll until done
-          $pollInterval = 5
-          $pollDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
-          $taskStatus = $taskInfo.task_status
-
-          while ($taskStatus -notin @('success', 'failure')) {
-            if ([DateTime]::UtcNow -gt $pollDeadline) {
-              throw "Async conversion timed out after ${TimeoutSec}s (task_id: $taskId, last status: $taskStatus)"
-            }
-            Start-Sleep -Seconds $pollInterval
-            $pollText = Get-Utf8Response -Uri "$pollEndpoint/$taskId" -Timeout 30
-            $pollResult = $pollText | ConvertFrom-Json
-            $taskStatus = $pollResult.task_status
-
-            # Update progress with polling info + ETA
-            $elapsedFile = $fileStart.Elapsed
-            $pollEta = ''
-            if ($converted -gt 0) {
-              $avgSec2 = $totalConvertTime / $converted
-              $remaining2 = ($totalFiles - $current) * $avgSec2 + [math]::Max(0, $avgSec2 - $elapsedFile.TotalSeconds)
-              $etaTs2 = [TimeSpan]::FromSeconds([math]::Max(0, $remaining2))
-              $elapsed2 = $batchStopwatch.Elapsed
-              $pollEta = " | ETA: $($etaTs2.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed2.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec2,1))s/file"
-            }
-            Write-Progress -Activity "Docling Conversion" `
-              -Status "[$current/$totalFiles] $($file.Name) - converting... ($([math]::Round($elapsedFile.TotalSeconds))s)$pollEta" `
-              -PercentComplete $pctComplete
+          $convertSuccess = $true
+          break
+        }
+        catch {
+          $errorText = $_.Exception.Message
+          # Provide helpful hint for 504 errors
+          if ($errorText -match '504') {
+            $errorText += " [HINT: A reverse proxy is timing out. The Docling async endpoint (/v1/convert/file/async) would avoid this, but may not be available on your server version.]"
           }
-
-          if ($taskStatus -eq 'failure') {
-            throw "Async conversion failed on server (task_id: $taskId)"
+          if ($attempt -le $RetryCount) {
+            $waitSec = [math]::Pow(2, $attempt)
+            Write-Warning "[Invoke-DoclingConversion] Attempt $attempt failed for '$($file.Name)': $errorText. Retrying in ${waitSec}s..."
+            Start-Sleep -Seconds $waitSec
           }
-
-          # Fetch result
-          $resultText = Get-Utf8Response -Uri "$resultEndpoint/$taskId" -Timeout 60
-          $responseContent = $resultText | ConvertFrom-Json
-        }
-        else {
-          # ---- SYNC path: direct POST, wait for response ----
-          $syncText = Send-MultipartRequest -Uri $convertEndpoint -Body $bodyBytes -CT $contentType -Timeout $TimeoutSec
-          $responseContent = $syncText | ConvertFrom-Json
-        }
-
-        $convertSuccess = $true
-        break
-      }
-      catch {
-        $errorText = $_.Exception.Message
-        # Provide helpful hint for 504 errors
-        if ($errorText -match '504') {
-          $errorText += " [HINT: A reverse proxy is timing out. The Docling async endpoint (/v1/convert/file/async) would avoid this, but may not be available on your server version.]"
-        }
-        if ($attempt -le $RetryCount) {
-          $waitSec = [math]::Pow(2, $attempt)
-          Write-Warning "[Invoke-DoclingConversion] Attempt $attempt failed for '$($file.Name)': $errorText. Retrying in ${waitSec}s..."
-          Start-Sleep -Seconds $waitSec
-        }
-        else {
-          Write-Warning "[Invoke-DoclingConversion] FAILED after $($RetryCount + 1) attempts: '$($file.Name)': $errorText"
-        }
-      }
-    }
-
-    $fileStart.Stop()
-    $fileDuration = [math]::Round($fileStart.Elapsed.TotalSeconds, 2)
-
-    if ($convertSuccess) {
-      $converted++
-      $totalConvertTime += $fileDuration
-
-      # Save output files
-      $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.RelativePath)
-      $relDir = [System.IO.Path]::GetDirectoryName($file.RelativePath)
-
-      foreach ($fmt in $ToFormats) {
-        $outExt = $formatExtMap[$fmt]
-        $apiKey = $formatApiMap[$fmt]
-
-        if ($multiFormat) {
-          $outFilePath = Join-Path $OutputPath (Join-Path $fmt (Join-Path $relDir "$baseName$outExt"))
-        }
-        else {
-          $outFilePath = Join-Path $OutputPath (Join-Path $relDir "$baseName$outExt")
-        }
-
-        $outDir = Split-Path $outFilePath -Parent
-        if (-not (Test-Path $outDir)) {
-          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-        }
-
-        # Extract content from response
-        $content = $null
-
-        # Docling Serve response structure: check for document content
-        if ($responseContent.document) {
-          $doc = $responseContent.document
-          switch ($fmt) {
-            'markdown' {
-              $content = if ($doc.md_content) { $doc.md_content }
-                         elseif ($doc.export_to_markdown) { $doc.export_to_markdown }
-                         elseif ($doc.content) { $doc.content }
-            }
-            'html' {
-              $content = if ($doc.html_content) { $doc.html_content }
-                         elseif ($doc.export_to_html) { $doc.export_to_html }
-            }
-            'text' {
-              $content = if ($doc.text_content) { $doc.text_content }
-                         elseif ($doc.export_to_text) { $doc.export_to_text }
-            }
-            'json' {
-              $content = $doc | ConvertTo-Json -Depth 20
-            }
-            'doctags' {
-              $content = if ($doc.doctags_content) { $doc.doctags_content }
-                         elseif ($doc.export_to_document_tokens) { $doc.export_to_document_tokens }
-            }
+          else {
+            Write-Warning "[Invoke-DoclingConversion] FAILED after $($RetryCount + 1) attempts: '$($file.Name)': $errorText"
           }
-        }
-        elseif ($responseContent.$apiKey) {
-          $content = $responseContent.$apiKey
-        }
-        elseif ($responseContent.content) {
-          $content = $responseContent.content
-        }
-
-        if ($content) {
-          [System.IO.File]::WriteAllText($outFilePath, $content, [System.Text.Encoding]::UTF8)
-        }
-        else {
-          # Fallback: save entire response as JSON
-          $fallbackContent = $responseContent | ConvertTo-Json -Depth 20
-          [System.IO.File]::WriteAllText($outFilePath, $fallbackContent, [System.Text.Encoding]::UTF8)
-          Write-Warning "[Invoke-DoclingConversion] Could not extract '$fmt' content for '$($file.Name)'. Saved raw response."
         }
       }
 
-      Write-Host "  [OK] $($file.Name) (${fileDuration}s)" -ForegroundColor Green
-    }
-    else {
-      $failed++
+      $fileStart.Stop()
+      $fileDuration = [math]::Round($fileStart.Elapsed.TotalSeconds, 2)
 
+      if ($convertSuccess) {
+        $converted++
+        $totalConvertTime += $fileDuration
+
+        # Save output files
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.RelativePath)
+        $relDir = [System.IO.Path]::GetDirectoryName($file.RelativePath)
+
+        foreach ($fmt in $ToFormats) {
+          $outExt = $formatExtMap[$fmt]
+          $apiKey = $formatApiMap[$fmt]
+
+          $relFile = if ([string]::IsNullOrEmpty($relDir)) { "$baseName$outExt" } else { Join-Path $relDir "$baseName$outExt" }
+
+          if ($multiFormat) {
+            $outFilePath = Join-Path $OutputPath (Join-Path $fmt $relFile)
+          }
+          else {
+            $outFilePath = Join-Path $OutputPath $relFile
+          }
+
+          $outDir = Split-Path $outFilePath -Parent
+          if (-not (Test-Path $outDir)) {
+            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+          }
+
+          # Extract content from response
+          $content = $null
+
+          # Docling Serve response structure: check for document content
+          if ($responseContent.document) {
+            $doc = $responseContent.document
+            switch ($fmt) {
+              'markdown' {
+                $content = if ($doc.md_content) { $doc.md_content }
+                elseif ($doc.export_to_markdown) { $doc.export_to_markdown }
+                elseif ($doc.content) { $doc.content }
+              }
+              'html' {
+                $content = if ($doc.html_content) { $doc.html_content }
+                elseif ($doc.export_to_html) { $doc.export_to_html }
+              }
+              'text' {
+                $content = if ($doc.text_content) { $doc.text_content }
+                elseif ($doc.export_to_text) { $doc.export_to_text }
+              }
+              'json' {
+                $content = $doc | ConvertTo-Json -Depth 20
+              }
+              'doctags' {
+                $content = if ($doc.doctags_content) { $doc.doctags_content }
+                elseif ($doc.export_to_document_tokens) { $doc.export_to_document_tokens }
+              }
+            }
+          }
+          elseif ($responseContent.$apiKey) {
+            $content = $responseContent.$apiKey
+          }
+          elseif ($responseContent.content) {
+            $content = $responseContent.content
+          }
+
+          if ($content) {
+            [System.IO.File]::WriteAllText($outFilePath, $content, [System.Text.Encoding]::UTF8)
+          }
+          else {
+            # Fallback: save entire response as JSON
+            $fallbackContent = $responseContent | ConvertTo-Json -Depth 20
+            [System.IO.File]::WriteAllText($outFilePath, $fallbackContent, [System.Text.Encoding]::UTF8)
+            Write-Warning "[Invoke-DoclingConversion] Could not extract '$fmt' content for '$($file.Name)'. Saved raw response."
+          }
+        }
+
+        Write-Host "  [OK] $($file.Name) (${fileDuration}s)" -ForegroundColor Green
+      }
+      else {
+        $failed++
+
+        $logEntries += [PSCustomObject]@{
+          Timestamp    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+          File         = $file.Name
+          RelativePath = $file.RelativePath
+          SizeMB       = $file.SizeMB
+          Status       = 'FAILED'
+          DurationSec  = $fileDuration
+          Error        = $errorText
+        }
+
+        Write-Host "  [FAIL] $($file.Name) (${fileDuration}s) - $errorText" -ForegroundColor Red
+
+        if ($AbortOnError) {
+          Write-Error "[Invoke-DoclingConversion] Aborting due to -AbortOnError."
+          break
+        }
+
+        continue
+      }
+
+      # Log entry for success
       $logEntries += [PSCustomObject]@{
         Timestamp    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         File         = $file.Name
         RelativePath = $file.RelativePath
         SizeMB       = $file.SizeMB
-        Status       = 'FAILED'
+        Status       = 'OK'
         DurationSec  = $fileDuration
-        Error        = $errorText
+        Error        = ''
       }
-
-      Write-Host "  [FAIL] $($file.Name) (${fileDuration}s) - $errorText" -ForegroundColor Red
-
-      if ($AbortOnError) {
-        Write-Error "[Invoke-DoclingConversion] Aborting due to -AbortOnError."
-        break
-      }
-
-      continue
     }
 
-    # Log entry for success
-    $logEntries += [PSCustomObject]@{
-      Timestamp    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-      File         = $file.Name
-      RelativePath = $file.RelativePath
-      SizeMB       = $file.SizeMB
-      Status       = 'OK'
-      DurationSec  = $fileDuration
-      Error        = ''
-    }
-  }
-
-  Write-Progress -Activity "Docling Conversion" -Completed
-  $batchStopwatch.Stop()
+    Write-Progress -Activity "Docling Conversion" -Completed
+    $batchStopwatch.Stop()
 
   } # end try
   finally {
@@ -940,18 +944,18 @@ function Invoke-DoclingConversion {
 
   # Run summary log (for dashboard time estimation)
   $runEntry = @{
-    date          = $batchStart.ToString('yyyy-MM-dd HH:mm:ss')
-    files         = $converted + $failed
-    converted     = $converted
-    failed        = $failed
-    skipped       = $skippedExisting
-    totalSeconds  = [math]::Round($batchDuration, 2)
-    avgPerFile    = if ($converted -gt 0) { [math]::Round($totalConvertTime / $converted, 2) } else { 0 }
-    avgPerMB      = if ($converted -gt 0 -and $totalSizeMB -gt 0) { [math]::Round($totalConvertTime / $totalSizeMB, 2) } else { 0 }
-    totalSizeMB   = $totalSizeMB
-    formats       = ($ToFormats -join ',')
-    pipelineType  = $PipelineType
-    ocrEngine     = if ($EnableOcr) { $OcrEngine } else { 'disabled' }
+    date         = $batchStart.ToString('yyyy-MM-dd HH:mm:ss')
+    files        = $converted + $failed
+    converted    = $converted
+    failed       = $failed
+    skipped      = $skippedExisting
+    totalSeconds = [math]::Round($batchDuration, 2)
+    avgPerFile   = if ($converted -gt 0) { [math]::Round($totalConvertTime / $converted, 2) } else { 0 }
+    avgPerMB     = if ($converted -gt 0 -and $totalSizeMB -gt 0) { [math]::Round($totalConvertTime / $totalSizeMB, 2) } else { 0 }
+    totalSizeMB  = $totalSizeMB
+    formats      = ($ToFormats -join ',')
+    pipelineType = $PipelineType
+    ocrEngine    = if ($EnableOcr) { $OcrEngine } else { 'disabled' }
   }
 
   $existingRuns = @()
