@@ -3213,7 +3213,8 @@ function dlCreateNode(path, isRoot) {
     convBadge.style.background = 'rgba(148,163,184,0.1)';
     convBadge.style.color = '#64748b';
   }
-  convBadge.title = convDone + ' von ' + convTotal + ' konvertierbaren Dateien veredelt';
+  var convPct = convTotal > 0 ? Math.round((convDone / convTotal) * 1000) / 10 : 0;
+  convBadge.title = convDone + ' von ' + convTotal + ' konvertierbaren Dateien veredelt (' + convPct + '%)';
   row.appendChild(convBadge);
 
   div.appendChild(row);
