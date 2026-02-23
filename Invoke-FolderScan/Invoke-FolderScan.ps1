@@ -728,8 +728,9 @@ $themeCss
 
   /* === CHARTS === */
   .chart-section {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 2rem;
   }
+  @media (max-width: 1200px) { .chart-section { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 900px) { .chart-section { grid-template-columns: 1fr; } }
   .analysis-tabs {
     display: inline-flex;
@@ -757,11 +758,12 @@ $themeCss
   .analysis-pane { display: none; }
   .analysis-pane.active { display: block; }
   .chart-card {
-    background: var(--bg-card); border-radius: var(--radius-card); padding: 2rem;
+    background: var(--bg-card); border-radius: var(--radius-card); padding: 1.5rem;
     border: 1px solid var(--border-glass);
   }
-  .chart-card h2 { font-family: var(--font-head); font-size: 1.1rem; font-weight: 500; margin-bottom: 1.5rem; color: var(--text-primary); }
+  .chart-card h2 { font-family: var(--font-head); font-size: 1.1rem; font-weight: 500; margin-bottom: 1rem; color: var(--text-primary); }
   .chart-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
+  .chart-container svg { width: 100%; max-width: 320px; height: auto; }
   .chart-actions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
   .chart-card .ext-browser { margin-top: 1rem; margin-bottom: 0; }
   .legend { display: flex; flex-direction: row; flex-wrap: wrap; gap: 0.45rem 0.6rem; font-size: 0.82rem; width: 100%; max-height: none; overflow: visible; }
@@ -1092,38 +1094,46 @@ $themeCss
 
   <div class="analysis-pane active" id="pane-files">
     <!-- Charts -->
-    <div class="chart-section">
-      <div class="chart-card">
-        <h2>📊 Verteilung nach Dateiendung</h2>
-        <div class="chart-container">
-          <div style="position:relative">
-            <svg id="pie-ext" width="420" height="420" viewBox="-210 -210 420 420"></svg>
-            <div class="pie-tooltip" id="tip-ext"></div>
+    <details id="charts-panel" open style="background:var(--bg-card);border-radius:var(--radius-card);padding:0;margin-bottom:1.5rem;border:1px solid var(--border-glass)">
+      <summary style="padding:1rem 1.5rem;cursor:pointer;font-weight:600;font-size:0.95rem;list-style:none;display:flex;align-items:center;gap:0.6rem;user-select:none">
+        <span style="transition:transform 0.2s;display:inline-block" id="charts-arrow">&#9660;</span>
+        &#128202; Diagramme
+      </summary>
+      <div style="padding:0 1.5rem 1.2rem 1.5rem">
+        <div class="chart-section" style="margin-bottom:0">
+          <div class="chart-card">
+            <h2>📊 Verteilung nach Dateiendung</h2>
+            <div class="chart-container">
+              <div style="position:relative">
+                <svg id="pie-ext" viewBox="-210 -210 420 420"></svg>
+                <div class="pie-tooltip" id="tip-ext"></div>
+              </div>
+              <div class="legend" id="leg-ext"></div>
+            </div>
           </div>
-          <div class="legend" id="leg-ext"></div>
+          <div class="chart-card">
+            <h2>✅ Konvertierbarkeit</h2>
+            <div class="chart-container">
+              <div style="position:relative">
+                <svg id="pie-conv" viewBox="-210 -210 420 420"></svg>
+                <div class="pie-tooltip" id="tip-conv"></div>
+              </div>
+              <div class="legend" id="leg-conv"></div>
+            </div>
+          </div>
+          <div class="chart-card">
+            <h2>🔄 Pipeline-Status</h2>
+            <div class="chart-container">
+              <div style="position:relative">
+                <svg id="pie-pipe" viewBox="-210 -210 420 420"></svg>
+                <div class="pie-tooltip" id="tip-pipe"></div>
+              </div>
+              <div class="legend" id="leg-pipe"></div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="chart-card">
-        <h2>✅ Konvertierbarkeit</h2>
-        <div class="chart-container">
-          <div style="position:relative">
-            <svg id="pie-conv" width="420" height="420" viewBox="-210 -210 420 420"></svg>
-            <div class="pie-tooltip" id="tip-conv"></div>
-          </div>
-          <div class="legend" id="leg-conv"></div>
-        </div>
-      </div>
-      <div class="chart-card">
-        <h2>🔄 Pipeline-Status</h2>
-        <div class="chart-container">
-          <div style="position:relative">
-            <svg id="pie-pipe" width="420" height="420" viewBox="-210 -210 420 420"></svg>
-            <div class="pie-tooltip" id="tip-pipe"></div>
-          </div>
-          <div class="legend" id="leg-pipe"></div>
-        </div>
-      </div>
-    </div>
+    </details>
   </div>
 
   <div class="analysis-pane" id="pane-structure">
@@ -3068,13 +3078,20 @@ if (typeof jQuery !== 'undefined' && jQuery.fn.dataTable) {
   });
 }
 
-// Arrow toggle for details panel
+// Arrow toggle for details panels
 (function() {
   var panel = document.getElementById('gf-panel');
   var arrow = document.getElementById('gf-arrow');
   if (panel && arrow) {
     panel.addEventListener('toggle', function() {
       arrow.style.transform = panel.open ? 'rotate(90deg)' : 'rotate(0deg)';
+    });
+  }
+  var chartsPanel = document.getElementById('charts-panel');
+  var chartsArrow = document.getElementById('charts-arrow');
+  if (chartsPanel && chartsArrow) {
+    chartsPanel.addEventListener('toggle', function() {
+      chartsArrow.style.transform = chartsPanel.open ? 'rotate(0deg)' : 'rotate(-90deg)';
     });
   }
 })();
