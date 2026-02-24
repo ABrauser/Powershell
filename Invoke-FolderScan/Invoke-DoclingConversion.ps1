@@ -56,8 +56,8 @@
     Valid values: 'auto', 'easyocr', 'tesseract', 'rapidocr'.
 
 .PARAMETER PdfBackend
-    PDF parsing backend. Default: 'dlparse_v4'.
-    Valid values: 'pypdfium2', 'dlparse_v1', 'dlparse_v2', 'dlparse_v4'.
+    PDF parsing backend. Default: 'docling_parse'.
+    Valid values: 'docling_parse', 'pypdfium2'.
 
 .PARAMETER TableMode
     Table extraction mode. Default: 'accurate'.
@@ -164,8 +164,8 @@ function Invoke-DoclingConversion {
     [ValidateSet('auto', 'easyocr', 'tesseract', 'rapidocr')]
     [string]$OcrEngine = 'auto',
 
-    [ValidateSet('pypdfium2', 'dlparse_v1', 'dlparse_v2', 'dlparse_v4')]
-    [string]$PdfBackend = 'dlparse_v4',
+    [ValidateSet('docling_parse', 'pypdfium2')]
+    [string]$PdfBackend = 'docling_parse',
 
     [ValidateSet('fast', 'accurate')]
     [string]$TableMode = 'accurate',

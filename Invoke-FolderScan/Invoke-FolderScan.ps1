@@ -1403,10 +1403,8 @@ $themeCss
         <div class="dl-opt-group">
           <h4>PDF Backend</h4>
           <div class="dl-opt-row">
+            <label><input type="radio" name="dl-pdfbe" value="docling_parse" checked onchange="dlBuildCommand()"> docling_parse</label>
             <label><input type="radio" name="dl-pdfbe" value="pypdfium2" onchange="dlBuildCommand()"> pypdfium2</label>
-            <label><input type="radio" name="dl-pdfbe" value="dlparse_v1" onchange="dlBuildCommand()"> dlparse_v1</label>
-            <label><input type="radio" name="dl-pdfbe" value="dlparse_v2" onchange="dlBuildCommand()"> dlparse_v2</label>
-            <label><input type="radio" name="dl-pdfbe" value="dlparse_v4" checked onchange="dlBuildCommand()"> dlparse_v4</label>
           </div>
         </div>
         <div class="dl-opt-group">
@@ -3446,7 +3444,7 @@ function dlBuildCommand() {
 
   var pipeline = (document.querySelector('input[name="dl-pipeline"]:checked') || {}).value || 'standard';
   var ocrEng = (document.querySelector('input[name="dl-ocreng"]:checked') || {}).value || 'easyocr';
-  var pdfBe = (document.querySelector('input[name="dl-pdfbe"]:checked') || {}).value || 'dlparse_v4';
+  var pdfBe = (document.querySelector('input[name="dl-pdfbe"]:checked') || {}).value || 'docling_parse';
   var tblMode = (document.querySelector('input[name="dl-tblmode"]:checked') || {}).value || 'accurate';
   var imgMode = (document.querySelector('input[name="dl-imgmode"]:checked') || {}).value || 'embedded';
 
@@ -3478,7 +3476,7 @@ function dlBuildCommand() {
   if (ocr) extras += ' -EnableOcr';
   if (forceOcr) extras += ' -ForceOcr';
   if (ocr && ocrEng !== 'auto') extras += ' -OcrEngine ' + ocrEng;
-  if (pdfBe !== 'dlparse_v4') extras += ' -PdfBackend ' + pdfBe;
+  if (pdfBe !== 'docling_parse') extras += ' -PdfBackend ' + pdfBe;
   if (tblMode !== 'accurate') extras += ' -TableMode ' + tblMode;
   if (imgMode !== 'embedded') extras += ' -ImageExportMode ' + imgMode;
   if (abort) extras += ' -AbortOnError';
