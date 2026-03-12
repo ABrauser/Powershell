@@ -6,7 +6,7 @@ A collection of useful PowerShell scripts and functions by [Benjamin Rauser](mai
 
 | Tool | Description |
 |------|-------------|
-| [Invoke-FolderScan](./Invoke-FolderScan/) | Scans a directory and generates an interactive HTML dashboard with treemap, charts, and file statistics |
+| [DocPipeline](./DocPipeline/) | Document processing pipeline: Scan → Copy → Convert (Docling) → Upload (AnythingLLM) with interactive HTML dashboard |
 
 ## 🚀 Usage
 
@@ -15,9 +15,13 @@ Each tool lives in its own subfolder with a dedicated `README.md`. Click the lin
 ### Quick Example
 
 ```powershell
-# Load and run Invoke-FolderScan
-. .\Invoke-FolderScan\Invoke-FolderScan.ps1
+# Load and run the folder scanner
+. .\DocPipeline\Invoke-FolderScan.ps1
 Invoke-FolderScan -Path "C:\MyData" -Recurse
+
+# Open the AnythingLLM upload GUI
+. .\DocPipeline\Invoke-AnythingLLMUpload.ps1
+Invoke-AnythingLLMUpload -Gui
 ```
 
 ## 📄 License

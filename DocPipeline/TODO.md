@@ -1,6 +1,6 @@
-# Invoke-FolderScan — Offene Punkte & Status
+# DocPipeline — Offene Punkte & Status
 
-## Stand: 2026-02-16
+## Stand: 2026-03-11
 
 ### ✅ Erledigt
 
@@ -41,19 +41,44 @@
   - Vollständiges Options-Panel (To Formats, Pipeline, OCR, PDF Backend, Table, Enrichment)
   - Command Builder generiert kopierbaren PowerShell-Befehl
   - localStorage-Persistenz für Docling URL, Input/Output Pfade
+- **Pipeline Manifest** — `pipeline_manifest.json` als portabler Status-Tracker:
+  - `Copy-ScannedFiles.ps1`: Schreibt Status `"kopiert"` nach Copy
+  - `Invoke-DoclingConversion.ps1`: Schreibt Status `"veredelt"` nach Konvertierung
+  - `Invoke-FolderScan.ps1`: Smart Path Detection (Offline-Fallback), Manifest-Lookup vor Test-Path
+- **AnythingLLM Upload** — `Invoke-AnythingLLMUpload.ps1`:
+  - Two-Phase: Upload (synchron) → Embedding (Batch-Polling auf `cached: true`)
+  - Konfigurierbar: BatchSize, BatchPauseSec, EmbeddingTimeout, EmbeddingPollInterval
+  - SecureString API Key Caching (Session-basiert)
+  - Skip-existing (Resume-safe), Force, UploadOnly
+  - Retry mit exponential Backoff
+  - Logs: `upload_log.csv`, `upload_errors.csv`, `upload_runs.json`
+  - Pipeline Manifest: Schreibt Status `"hochgeladen"` mit Workspace + DocumentLocation
+  - Folder- und Extension-Filter
+- **Dashboard AnythingLLM-Panel** — Neuer Abschnitt im Dashboard:
+  - AnythingLLM URL, Workspace Slug, Document Folder Eingabefelder
+  - Input-Ordner (auto-sync aus Docling Ergebnis-Ordner)
+  - Extensions-Filter (.md als Default)
+  - Options-Panel: Batch, Embedding, Retries, Timeout, Modus (Skip/UploadOnly)
+  - Command Builder generiert kopierbaren PowerShell-Befehl
+  - API Key Hinweis (SecureString, nicht im Dashboard gespeichert)
+  - localStorage-Persistenz für alle Einstellungen
 
 ### 🔲 Offen
 
 - **Copy-ScannedFiles.ps1 Examples** — `.EXAMPLE` Abschnitte: `FullScan.csv` durch `Pipeline_*.csv` ersetzen
-- **README.md Update** — Neue Parameter, Docling-Workflow, Invoke-DoclingConversion Dokumentation
-- **Praxistest** — Invoke-DoclingConversion gegen echten Docling Serve testen, Response-Parsing validieren
+- **README.md Update** — Neue Parameter, Docling-Workflow, AnythingLLM-Workflow, Manifest-Dokumentation
+- **Praxistest Docling** — Invoke-DoclingConversion gegen echten Docling Serve testen, Response-Parsing validieren
+- **Praxistest AnythingLLM** — Invoke-AnythingLLMUpload gegen laufende Instanz testen, Embedding-Polling validieren
 - **MaxConcurrency** — Parallele API-Calls (Runspace/Job-basiert) implementieren (aktuell sequentiell)
 
 ### 📝 Architektur-Hinweise
 
-- **Ordner-Vertrag**: Source (Original) → Staging (Kopie) → Ergebnis (Docling Output)
+- **Ordner-Vertrag**: Source (Original) → Staging (Kopie) → Ergebnis (Docling Output) → AnythingLLM (Upload)
 - **CSV-Vertrag**: `FullScan.csv` = Inventar (nie direkt kopieren), `Pipeline_*.csv` = kuratierte Arbeitsliste
 - **Dashboard**: Statische HTML-Datei, JavaScript im Browser, keine Server-Komponente
-- **Pfade in JS**: Müssen mit `-replace '\\', '\\\\'` escaped werden (PowerShell Here-String → JS String)
+- **Pfade in JS**: Müssen mit `-replace '\\\\', '\\\\\\\\'` escaped werden (PowerShell Here-String → JS String)
 - **Docling API**: Base URL z.B. `http://janus:8080`, Endpoint `POST /v1/convert/file` (Multipart Form)
 - **Docling Logs**: `docling_log.csv` (per-file Detail) + `docling_runs.json` (Batch-Zusammenfassungen für Dashboard ETA)
+- **AnythingLLM API**: Base URL z.B. `http://localhost:3001`, Upload `POST /api/v1/document/upload/{folder}`, Embedding `POST /api/v1/workspace/{slug}/update-embeddings`
+- **AnythingLLM Logs**: `upload_log.csv` + `upload_errors.csv` + `upload_runs.json`
+- **Pipeline Manifest**: `pipeline_manifest.json` in jedem Ordner (Staging, Ergebnis, InputPath) — portabler Status-Tracker für Offline-Szenarien

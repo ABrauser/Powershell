@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Scans a target directory and generates an interactive HTML dashboard with statistics.
 
@@ -101,7 +101,6 @@ function Invoke-FolderScan {
   [CmdletBinding(DefaultParameterSetName = 'Scan')]
   param(
     [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Scan')]
-    [ValidateScript({ Test-Path $_ -PathType Container })]
     [string]$Path,
 
     [Parameter(ParameterSetName = 'Scan')]
@@ -110,7 +109,7 @@ function Invoke-FolderScan {
     [string]$OutputDir = ".\scan-results",
 
     [ValidateSet('dark', 'light')]
-    [string]$Theme = 'dark',
+    [string]$Theme = 'dark', 
 
     [Parameter(Mandatory = $true, ParameterSetName = 'Load')]
     [switch]$LoadLatest,
@@ -154,14 +153,37 @@ function Invoke-FolderScan {
   $ResolvedPath = ""
 
   # ═══════════════════════════════════════════════════════════════
-  # MODE: LOAD LATEST
+  # MODE: SMART PATH DETECTION
   # ═══════════════════════════════════════════════════════════════
-  if ($LoadLatest) {
+  $pathAccessible = $false
+  $offlineMode = $false
+
+  if (-not $LoadLatest) {
+    $pathAccessible = Test-Path $Path -PathType Container
+    if (-not $pathAccessible) {
+      # Path not reachable → try to load from CSV (offline fallback)
+      if (Test-Path $csvPath) {
+        Write-Warning "[Invoke-FolderScan] Pfad '$Path' ist nicht erreichbar. Lade letzten Scan aus CSV + Manifest..."
+        $offlineMode = $true
+        $ResolvedPath = $Path.TrimEnd('\\')
+      }
+      else {
+        Write-Error "[Invoke-FolderScan] Pfad '$Path' ist nicht erreichbar und keine vorherige CSV gefunden in '$csvPath'."
+        return @()
+      }
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════
+  # MODE: LOAD LATEST (explicit or offline fallback)
+  # ═══════════════════════════════════════════════════════════════
+  if ($LoadLatest -or $offlineMode) {
     if (-not (Test-Path $csvPath)) {
       Write-Warning "[Invoke-FolderScan] No previous scan found at '$csvPath'. Run a fresh scan first."
       return @()
     }
-    Write-Host "`n[Invoke-FolderScan] Loading latest scan from: $csvPath" -ForegroundColor Cyan
+    $loadLabel = if ($offlineMode) { 'Offline-Fallback' } else { 'LoadLatest' }
+    Write-Host "`n[Invoke-FolderScan] [$loadLabel] Loading scan from: $csvPath" -ForegroundColor Cyan
     $FileList = Import-Csv -Path $csvPath -Encoding UTF8
     # Convert types
     $FileList = $FileList | ForEach-Object {
@@ -184,21 +206,24 @@ function Invoke-FolderScan {
       catch {}
     }
 
-    $ResolvedPath = if ($resolvedFromMeta) {
-      $resolvedFromMeta
+    if (-not $offlineMode) {
+      # Normal LoadLatest: use meta or CSV data
+      $ResolvedPath = if ($resolvedFromMeta) {
+        $resolvedFromMeta
+      }
+      elseif ($FileList.Count -gt 0) {
+        ($FileList[0].DirectoryName)
+      }
+      else { $OutputDir }
     }
-    elseif ($FileList.Count -gt 0) {
-      # Try to find common root
-      ($FileList[0].DirectoryName)
-    }
-    else { $OutputDir }
+    # offlineMode: $ResolvedPath already set above from $Path
     Write-Host "[Invoke-FolderScan] Loaded $($FileList.Count) files from CSV." -ForegroundColor Green
   }
 
   # ═══════════════════════════════════════════════════════════════
   # MODE: FRESH SCAN
   # ═══════════════════════════════════════════════════════════════
-  if (-not $LoadLatest) {
+  if (-not $LoadLatest -and -not $offlineMode) {
     $ResolvedPath = (Resolve-Path $Path).Path
     Write-Host "`n[Invoke-FolderScan] Scanning: $ResolvedPath" -ForegroundColor Cyan
     Write-Host "[Invoke-FolderScan] Recursive: $Recurse" -ForegroundColor Cyan
@@ -342,10 +367,10 @@ function Invoke-FolderScan {
   }
 
   # ═══════════════════════════════════════════════════════════════
-  # PIPELINE STATUS (Staging / Ergebnis check)
+  # PIPELINE STATUS (Staging / Ergebnis check with Manifest support)
   # ═══════════════════════════════════════════════════════════════
-  # If LoadLatest, try to restore StagingPath/ErgebnisPath from metadata
-  if ($LoadLatest -and -not $StagingPath -and -not $ErgebnisPath) {
+  # If LoadLatest or offlineMode, try to restore StagingPath/ErgebnisPath from metadata
+  if (($LoadLatest -or $offlineMode) -and -not $StagingPath -and -not $ErgebnisPath) {
     if (Test-Path $metaPath) {
       try {
         $savedMeta = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -366,6 +391,53 @@ function Invoke-FolderScan {
     if ($StagingPath) { Write-Host "[Invoke-FolderScan] Staging:  $StagingPath" -ForegroundColor Cyan }
     if ($ErgebnisPath) { Write-Host "[Invoke-FolderScan] Ergebnis: $ErgebnisPath" -ForegroundColor Cyan }
 
+    # ─── Load manifests (portable pipeline status) ───
+    $stagingManifest = @{}
+    $ergebnisManifest = @{}
+
+    if ($StagingPath) {
+      $stagingManifestPath = Join-Path $StagingPath 'pipeline_manifest.json'
+      if (Test-Path $stagingManifestPath) {
+        try {
+          $smData = Get-Content -Path $stagingManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($smData.entries) {
+            foreach ($prop in $smData.entries.PSObject.Properties) {
+              $stagingManifest[$prop.Name] = $prop.Value.status
+            }
+          }
+          Write-Host "[Invoke-FolderScan] Staging-Manifest geladen: $($stagingManifest.Count) Eintraege" -ForegroundColor DarkGray
+        }
+        catch { Write-Warning "[Invoke-FolderScan] Could not read staging manifest: $_" }
+      }
+    }
+
+    if ($ErgebnisPath) {
+      $ergebnisManifestPath = Join-Path $ErgebnisPath 'pipeline_manifest.json'
+      if (Test-Path $ergebnisManifestPath) {
+        try {
+          $emData = Get-Content -Path $ergebnisManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($emData.entries) {
+            foreach ($prop in $emData.entries.PSObject.Properties) {
+              $ergebnisManifest[$prop.Name] = $prop.Value.status
+            }
+          }
+          Write-Host "[Invoke-FolderScan] Ergebnis-Manifest geladen: $($ergebnisManifest.Count) Eintraege" -ForegroundColor DarkGray
+        }
+        catch { Write-Warning "[Invoke-FolderScan] Could not read ergebnis manifest: $_" }
+      }
+    }
+
+    $hasManifest = ($stagingManifest.Count -gt 0 -or $ergebnisManifest.Count -gt 0)
+    $stagingAccessible = $StagingPath -and (Test-Path $StagingPath -PathType Container)
+    $ergebnisAccessible = $ErgebnisPath -and (Test-Path $ErgebnisPath -PathType Container)
+
+    if ($hasManifest) {
+      Write-Host "[Invoke-FolderScan] Pipeline-Modus: Manifest" -ForegroundColor DarkGray
+    }
+    if ($stagingAccessible -or $ergebnisAccessible) {
+      Write-Host "[Invoke-FolderScan] Pipeline-Modus: Test-Path Fallback aktiv" -ForegroundColor DarkGray
+    }
+
     $pipelineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     foreach ($f in $FileList) {
@@ -379,8 +451,22 @@ function Invoke-FolderScan {
 
       $status = 'offen'
 
-      # Check Ergebnis first (higher priority: veredelt > kopiert > offen)
-      if ($ErgebnisPath -and $relativePath) {
+      # 1. Check Ergebnis manifest first (highest priority: veredelt)
+      if ($status -eq 'offen' -and $ergebnisManifest.Count -gt 0 -and $relativePath) {
+        if ($ergebnisManifest.ContainsKey($relativePath)) {
+          $status = 'veredelt'
+        }
+      }
+
+      # 2. Check Staging manifest
+      if ($status -eq 'offen' -and $stagingManifest.Count -gt 0 -and $relativePath) {
+        if ($stagingManifest.ContainsKey($relativePath)) {
+          $status = 'kopiert'
+        }
+      }
+
+      # 3. Fallback: Test-Path (only if paths are accessible and no manifest hit)
+      if ($status -eq 'offen' -and $ergebnisAccessible -and $relativePath) {
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($relativePath)
         $relDir = [System.IO.Path]::GetDirectoryName($relativePath)
         $relMdPath = if ([string]::IsNullOrEmpty($relDir)) { "$baseName.md" } else { Join-Path $relDir "$baseName.md" }
@@ -390,8 +476,7 @@ function Invoke-FolderScan {
         }
       }
 
-      # Check Staging (only if not already veredelt)
-      if ($status -eq 'offen' -and $StagingPath -and $relativePath) {
+      if ($status -eq 'offen' -and $stagingAccessible -and $relativePath) {
         $stagingFile = Join-Path $StagingPath $relativePath
         if (Test-Path $stagingFile) {
           $status = 'kopiert'
@@ -1044,6 +1129,13 @@ $themeCss
   .dl-opt-row input[type="radio"], .dl-opt-row input[type="checkbox"] { accent-color: var(--accent); }
   .dl-summary { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; align-items: center; padding: 0.7rem 1rem; background: var(--bg-secondary); border-radius: 12px; border: 1px solid var(--border-glass); margin: 0.8rem 0; font-size: 0.82rem; }
   .dl-summary-val { font-weight: 600; color: var(--accent); }
+
+  /* AnythingLLM Upload Panel */
+  .allm-section { background: var(--bg-card); border-radius: var(--radius-card); padding: 1.5rem 2rem; margin: 1.5rem 0; border: 2px solid var(--accent); }
+  .allm-stats { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; padding: 0.7rem 1rem; background: var(--bg-secondary); border-radius: 12px; border: 1px solid var(--border-glass); margin: 0.8rem 0; font-size: 0.82rem; }
+  .allm-stats .stat-val { font-weight: 600; color: var(--accent); }
+  .allm-key-hint { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 1rem; background: rgba(168, 199, 250, 0.08); border: 1px solid rgba(168, 199, 250, 0.15); border-radius: 10px; font-size: 0.78rem; color: var(--text-secondary); margin: 0.8rem 0; }
+  .allm-key-hint .hint-icon { font-size: 1.1rem; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -1440,6 +1532,86 @@ $themeCss
         <button onclick="dlCopyCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">📋 Kopieren</button>
       </div>
       <div id="dl-cmd-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
+    </div>
+  </div>
+
+  <!-- AnythingLLM Upload Panel -->
+  <div class="allm-section" id="allm-section">
+    <h2 style="margin:0 0 0.5rem 0;font-size:1.1rem">🚀 AnythingLLM Upload &mdash; Dateien hochladen &amp; embedden</h2>
+    <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:1rem">Lade veredelte Dateien (z.B. Markdown) aus dem Ergebnis-Ordner in AnythingLLM hoch und bette sie in einen Workspace ein.</p>
+
+    <div class="allm-key-hint">
+      <span class="hint-icon">🔑</span>
+      <div>Der <strong>API Key</strong> wird beim Ausf&uuml;hren des Befehls abgefragt und als SecureString in der PowerShell-Session gecached. Er wird <em>nicht</em> im Dashboard gespeichert.</div>
+    </div>
+
+    <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:end;margin-bottom:1rem">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">AnythingLLM URL</label>
+        <input type="text" id="allm-url" placeholder="http://localhost:3001" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="allmSaveSettings();allmBuildCommand()">
+      </div>
+      <div style="flex:1;min-width:150px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Workspace Slug</label>
+        <input type="text" id="allm-workspace" placeholder="knowledge-base" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="allmSaveSettings();allmBuildCommand()">
+      </div>
+      <div style="flex:1;min-width:150px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Document Folder</label>
+        <input type="text" id="allm-docfolder" value="pipeline-upload" placeholder="pipeline-upload" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="allmSaveSettings();allmBuildCommand()">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:end;margin-bottom:1rem">
+      <div style="flex:2;min-width:200px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Input-Ordner (Ergebnis/Result)</label>
+        <input type="text" id="allm-input" placeholder="C:\TEMP\Result" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="allmInputManual=true;allmSaveSettings();allmBuildCommand()">
+      </div>
+      <div style="flex:1;min-width:120px">
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Extensions</label>
+        <input type="text" id="allm-ext" value=".md" placeholder=".md,.txt" style="width:100%;padding:0.5rem 0.8rem;border-radius:8px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace" oninput="allmSaveSettings();allmBuildCommand()">
+      </div>
+    </div>
+
+    <details style="margin-bottom:1rem">
+      <summary style="cursor:pointer;font-size:0.9rem;font-weight:600;color:var(--text-primary);padding:0.5rem 0">&#9881;&#65039; Upload &amp; Embedding Optionen</summary>
+      <div class="dl-options" id="allm-options">
+        <div class="dl-opt-group">
+          <h4>Batch</h4>
+          <div class="dl-opt-row" style="gap:0.8rem">
+            <label style="display:flex;align-items:center;gap:0.3rem">Batch-Size <input type="number" id="allm-batch" value="10" min="1" max="500" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"></label>
+            <label style="display:flex;align-items:center;gap:0.3rem">Pause <input type="number" id="allm-pause" value="5" min="0" max="300" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"> Sek.</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Embedding</h4>
+          <div class="dl-opt-row" style="gap:0.8rem">
+            <label style="display:flex;align-items:center;gap:0.3rem">Timeout <input type="number" id="allm-emb-timeout" value="300" min="30" max="3600" style="width:4rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"> Sek.</label>
+            <label style="display:flex;align-items:center;gap:0.3rem">Poll <input type="number" id="allm-emb-poll" value="10" min="3" max="120" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"> Sek.</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Retries &amp; Timeout</h4>
+          <div class="dl-opt-row" style="gap:0.8rem">
+            <label style="display:flex;align-items:center;gap:0.3rem">Retries <input type="number" id="allm-retries" value="3" min="0" max="10" style="width:3.5rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"></label>
+            <label style="display:flex;align-items:center;gap:0.3rem">Timeout <input type="number" id="allm-timeout" value="120" min="10" max="3600" style="width:4rem;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid var(--border-glass);background:var(--bg-secondary);color:var(--text-primary);font-size:0.82rem;font-family:'JetBrains Mono',monospace;text-align:center" oninput="allmSaveSettings();allmBuildCommand()"> Sek./Upload</label>
+          </div>
+        </div>
+        <div class="dl-opt-group">
+          <h4>Modus</h4>
+          <div class="dl-opt-row">
+            <label><input type="checkbox" id="allm-skip" checked onchange="allmSaveSettings();allmBuildCommand()" style="accent-color:var(--success)"> Skip existing</label>
+            <label><input type="checkbox" id="allm-uploadonly" onchange="allmSaveSettings();allmBuildCommand()"> Upload only (kein Embedding)</label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div style="margin-top:1rem">
+      <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Generierter Befehl</label>
+      <div style="position:relative">
+        <pre id="allm-cmd" style="background:var(--bg-secondary);border:1px solid var(--border-glass);border-radius:8px;padding:0.8rem 1rem;font-family:'JetBrains Mono','Cascadia Code','Consolas',monospace;font-size:0.75rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;margin:0;cursor:pointer;min-height:3rem" onclick="allmCopyCmd()"></pre>
+        <button onclick="allmCopyCmd()" style="position:absolute;top:0.3rem;right:0.3rem;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0.25rem 0.7rem;font-size:0.72rem;cursor:pointer">&#128203; Kopieren</button>
+      </div>
+      <div id="allm-cmd-copied" style="font-size:0.72rem;color:var(--success);margin-top:0.2rem;opacity:0;transition:opacity 0.3s"></div>
     </div>
   </div>
 
@@ -3544,6 +3716,8 @@ function dlOnInputManual() {
 function dlOnOutputManual() {
   dlOutputManual = true;
   updateRescanCommand();
+  // Sync AnythingLLM input from Docling output
+  if (typeof allmSyncFromDocling === 'function') { allmSyncFromDocling(); allmBuildCommand(); }
 }
 
 function dlSaveSettings() {
@@ -3648,7 +3822,124 @@ jQuery(document).ready(function() {
   try { switchAnalysisPane('files'); } catch(e) {}
   try { checkOffline(); } catch(e) {}
   try { dlInit(); } catch(e) { console.error('Docling Init Error:', e); }
+  try { allmInit(); } catch(e) { console.error('AnythingLLM Init Error:', e); }
 });
+
+// ================================================================
+// ANYTHINGLLM UPLOAD PANEL
+// ================================================================
+var allmInputManual = false;
+
+function allmBuildCommand() {
+  var url = (document.getElementById('allm-url') || {}).value || '';
+  var ws = (document.getElementById('allm-workspace') || {}).value || '';
+  var input = (document.getElementById('allm-input') || {}).value || '';
+  var el = document.getElementById('allm-cmd');
+
+  if (!url || !ws || !input) {
+    if (el) el.textContent = 'Bitte AnythingLLM URL, Workspace und Input-Ordner angeben.';
+    return;
+  }
+
+  var docFolder = (document.getElementById('allm-docfolder') || {}).value || 'pipeline-upload';
+  var ext = (document.getElementById('allm-ext') || {}).value || '.md';
+  var batch = parseInt((document.getElementById('allm-batch') || {}).value || '10', 10);
+  var pause = parseInt((document.getElementById('allm-pause') || {}).value || '5', 10);
+  var embTimeout = parseInt((document.getElementById('allm-emb-timeout') || {}).value || '300', 10);
+  var embPoll = parseInt((document.getElementById('allm-emb-poll') || {}).value || '10', 10);
+  var retries = parseInt((document.getElementById('allm-retries') || {}).value || '3', 10);
+  var timeout = parseInt((document.getElementById('allm-timeout') || {}).value || '120', 10);
+  var skip = document.getElementById('allm-skip') && document.getElementById('allm-skip').checked;
+  var uploadOnly = document.getElementById('allm-uploadonly') && document.getElementById('allm-uploadonly').checked;
+
+  var bt = '\x60';
+  var cmd = '. "' + scriptRoot.replace(/[\\\/]+$/, '') + '\\Invoke-AnythingLLMUpload.ps1"\n';
+  cmd += 'Invoke-AnythingLLMUpload -AnythingLLMUrl "' + url + '" ' + bt + '\n';
+  cmd += '  -InputPath "' + input + '" ' + bt + '\n';
+  cmd += '  -WorkspaceSlug "' + ws + '"';
+
+  if (docFolder && docFolder !== 'pipeline-upload') {
+    cmd += ' ' + bt + '\n  -DocumentFolder "' + docFolder + '"';
+  }
+
+  // Extensions
+  var exts = ext.split(',').map(function(e) { return e.trim(); }).filter(function(e) { return e; });
+  if (exts.length > 0 && !(exts.length === 1 && exts[0] === '.md')) {
+    cmd += ' ' + bt + '\n  -Extensions ' + exts.map(function(e) { return "'" + e + "'"; }).join(',');
+  }
+
+  var extras = '';
+  if (batch !== 10) extras += ' -BatchSize ' + batch;
+  if (pause !== 5) extras += ' -BatchPauseSec ' + pause;
+  if (embTimeout !== 300) extras += ' -EmbeddingTimeoutSec ' + embTimeout;
+  if (embPoll !== 10) extras += ' -EmbeddingPollIntervalSec ' + embPoll;
+  if (!skip) extras += ' -Force';
+  if (uploadOnly) extras += ' -UploadOnly';
+  if (retries !== 3) extras += ' -RetryCount ' + retries;
+  if (timeout !== 120) extras += ' -TimeoutSec ' + timeout;
+  if (extras) cmd += ' ' + bt + '\n ' + extras.trim();
+
+  if (el) el.textContent = cmd;
+}
+
+function allmCopyCmd() {
+  var el = document.getElementById('allm-cmd');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    var msg = document.getElementById('allm-cmd-copied');
+    if (msg) { msg.textContent = 'In Zwischenablage kopiert!'; msg.style.opacity = '1'; setTimeout(function() { msg.style.opacity = '0'; }, 2000); }
+  });
+}
+
+function allmSaveSettings() {
+  try {
+    var s = {};
+    ['allm-url','allm-workspace','allm-docfolder','allm-input','allm-ext',
+     'allm-batch','allm-pause','allm-emb-timeout','allm-emb-poll',
+     'allm-retries','allm-timeout'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) s[id] = el.value;
+    });
+    ['allm-skip','allm-uploadonly'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) s[id] = el.checked;
+    });
+    s.inputManual = allmInputManual;
+    localStorage.setItem('allm_settings', JSON.stringify(s));
+  } catch(e) {}
+}
+
+function allmLoadSettings() {
+  try {
+    var raw = localStorage.getItem('allm_settings');
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    ['allm-url','allm-workspace','allm-docfolder','allm-input','allm-ext',
+     'allm-batch','allm-pause','allm-emb-timeout','allm-emb-poll',
+     'allm-retries','allm-timeout'].forEach(function(id) {
+      if (s[id] !== undefined) { var el = document.getElementById(id); if (el) el.value = s[id]; }
+    });
+    ['allm-skip','allm-uploadonly'].forEach(function(id) {
+      if (s.hasOwnProperty(id)) { var el = document.getElementById(id); if (el) el.checked = s[id]; }
+    });
+    if (s.inputManual) allmInputManual = true;
+  } catch(e) {}
+}
+
+function allmSyncFromDocling() {
+  if (allmInputManual) return;
+  var dlOut = document.getElementById('dl-output');
+  var allmIn = document.getElementById('allm-input');
+  if (dlOut && allmIn && dlOut.value) {
+    allmIn.value = dlOut.value;
+  }
+}
+
+function allmInit() {
+  allmLoadSettings();
+  allmSyncFromDocling();
+  allmBuildCommand();
+}
 
 </script>
 </body>

@@ -12,6 +12,17 @@ docling_log.csv
 docling_runs.json
 copy_notfound.csv
 copy_errors.csv
+upload_log.csv
+upload_errors.csv
+upload_runs.json
+
+# Generated HTML (regenerated on each run)
+Dashboard.html
+data.js
+AnythingLLM-Upload.html
+
+# Pipeline manifests (generated at runtime)
+pipeline_manifest.json
 
 # OS files
 Thumbs.db

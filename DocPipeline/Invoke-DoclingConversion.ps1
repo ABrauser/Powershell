@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Sends files to a Docling Serve API for document conversion (PDF → Markdown, HTML, etc.).
 
@@ -538,6 +538,7 @@ function Invoke-DoclingConversion {
   $totalFiles = $filesToConvert.Count
   $current = 0
   $totalConvertTime = 0
+  $manifestEntries = @{}
 
   Write-Host "`n[Invoke-DoclingConversion] Starting conversion..." -ForegroundColor Cyan
 
@@ -883,6 +884,13 @@ function Invoke-DoclingConversion {
         }
 
         Write-Host "  [OK] $($file.Name) (${fileDuration}s)" -ForegroundColor Green
+
+        # Track for manifest
+        $manifestEntries[$file.RelativePath] = @{
+          status       = 'veredelt'
+          processedAt  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+          sourceScript = 'Invoke-DoclingConversion'
+        }
       }
       else {
         $failed++
@@ -973,6 +981,33 @@ function Invoke-DoclingConversion {
   $runsJson = @{ runs = $existingRuns } | ConvertTo-Json -Depth 5
   [System.IO.File]::WriteAllText($runsJsonPath, $runsJson, [System.Text.Encoding]::UTF8)
   Write-Host "[Invoke-DoclingConversion] Run summary:  $runsJsonPath" -ForegroundColor DarkGray
+
+  # Write pipeline manifest
+  if ($manifestEntries.Count -gt 0) {
+    $manifestPath = Join-Path $OutputPath 'pipeline_manifest.json'
+    $manifest = @{ manifestVersion = 1; entries = @{} }
+    if (Test-Path $manifestPath) {
+      try {
+        $existing = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($existing.entries) {
+          foreach ($prop in $existing.entries.PSObject.Properties) {
+            $manifest.entries[$prop.Name] = @{
+              status       = $prop.Value.status
+              processedAt  = $prop.Value.processedAt
+              sourceScript = $prop.Value.sourceScript
+            }
+          }
+        }
+      }
+      catch { Write-Warning "[Invoke-DoclingConversion] Could not read existing manifest: $_" }
+    }
+    foreach ($key in $manifestEntries.Keys) {
+      $manifest.entries[$key] = $manifestEntries[$key]
+    }
+    $manifestJson = $manifest | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.Encoding]::UTF8)
+    Write-Host "[Invoke-DoclingConversion] Manifest:     $manifestPath ($($manifestEntries.Count) entries)" -ForegroundColor Green
+  }
 
   # ================================================================
   # SUMMARY

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Copies files listed in a FolderScan CSV to a target directory, preserving folder structure.
 
@@ -165,6 +165,7 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
   $skippedNotFound = 0
   $errors = 0
   $totalSize = 0
+  $manifestEntries = @{}
   $total = $files.Count
   $current = 0
   $notFoundLog = @()
@@ -246,6 +247,12 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
         Copy-Item -LiteralPath $sourcePath -Destination $destPath -Force
         $copied++
         $totalSize += [long]($f.SizeBytes)
+        # Track for manifest
+        $manifestEntries[$relativePath] = @{
+          status       = 'kopiert'
+          processedAt  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+          sourceScript = 'Copy-ScannedFiles'
+        }
       }
       catch {
         Write-Warning "[Copy-ScannedFiles] Failed to copy '$sourcePath': $_"
@@ -264,6 +271,33 @@ Tipp: Die Pipeline-CSV enthaelt nur die gefilterten Dateien aus dem Dashboard.
 
   Write-Progress -Activity "Dateien kopieren" -Completed
   $copyStopwatch.Stop()
+
+  # ── Write pipeline manifest ──
+  if ($manifestEntries.Count -gt 0) {
+    $manifestPath = Join-Path $Destination 'pipeline_manifest.json'
+    $manifest = @{ manifestVersion = 1; entries = @{} }
+    if (Test-Path $manifestPath) {
+      try {
+        $existing = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($existing.entries) {
+          foreach ($prop in $existing.entries.PSObject.Properties) {
+            $manifest.entries[$prop.Name] = @{
+              status       = $prop.Value.status
+              processedAt  = $prop.Value.processedAt
+              sourceScript = $prop.Value.sourceScript
+            }
+          }
+        }
+      }
+      catch { Write-Warning "[Copy-ScannedFiles] Could not read existing manifest: $_" }
+    }
+    foreach ($key in $manifestEntries.Keys) {
+      $manifest.entries[$key] = $manifestEntries[$key]
+    }
+    $manifestJson = $manifest | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.Encoding]::UTF8)
+    Write-Host "[Copy-ScannedFiles] Manifest: $manifestPath ($($manifestEntries.Count) entries)" -ForegroundColor Green
+  }
 
   # ── Write not-found log ──
   $logDir = $PSScriptRoot
