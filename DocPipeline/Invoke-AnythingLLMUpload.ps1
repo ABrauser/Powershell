@@ -960,7 +960,17 @@ build();
 
     if ($SmartSync -and $serverDocs.Count -gt 0) {
       # Step 2: Classify files into 3 stages
-      # Match by filename stem (without extension) because AnythingLLM may rename files
+      # Normalize filenames like AnythingLLM does: spaces->dashes, umlauts stripped
+      function Normalize-ALLMName {
+        param([string]$Name)
+        $n = $Name.Replace(' ', '-')
+        $n = $n.Replace('ä', 'a').Replace('Ä', 'A')
+        $n = $n.Replace('ö', 'o').Replace('Ö', 'O')
+        $n = $n.Replace('ü', 'u').Replace('Ü', 'U')
+        $n = $n.Replace('ß', 'ss')
+        return $n.ToLower()
+      }
+
       $needUpload = @()
       $needEmbedOnly = @()
       $alreadyDone = @()
@@ -969,16 +979,14 @@ build();
       foreach ($f in $filesToUpload) {
         $localName = $f.Name
         $localStem = [System.IO.Path]::GetFileNameWithoutExtension($localName)
-        # AnythingLLM replaces spaces with dashes in filenames
-        $localStemNorm = $localStem.Replace(' ', '-')
+        $localNorm = Normalize-ALLMName $localStem
 
         # Try exact match first, then normalized stem-based match
         $match = $serverDocs[$localName]
         if (-not $match) {
           foreach ($key in $serverDocs.Keys) {
-            $keyNorm = $key.Replace(' ', '-')
-            if ($keyNorm -eq $localStemNorm -or
-                $keyNorm.StartsWith($localStemNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $keyNorm = Normalize-ALLMName $key
+            if ($keyNorm -eq $localNorm -or $keyNorm.StartsWith($localNorm)) {
               $match = $serverDocs[$key]
               Write-Host "    [SmartSync] Match: '$localName' -> '$key'" -ForegroundColor DarkGray
               break
