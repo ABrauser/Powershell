@@ -1104,6 +1104,29 @@ build();
     Write-Host "[Invoke-AnythingLLMUpload] Keine neuen Dateien zum Upload." -ForegroundColor DarkGray
   }
 
+  # ── SmartSync: Embed-only files FIRST (already uploaded, not yet embedded) ──
+  if (-not $UploadOnly -and $smartSyncEmbedOnly.Count -gt 0) {
+    Write-Host "`n[SmartSync] Zuerst $($smartSyncEmbedOnly.Count) ausstehende Datei(en) embedden..." -ForegroundColor Magenta
+
+    $embedIdx = 0
+    $embedded = 0
+    foreach ($f in $smartSyncEmbedOnly) {
+      $embedIdx++
+      $loc = "$DocumentFolder/$($f.Name)"
+      Write-Host "  [$embedIdx/$($smartSyncEmbedOnly.Count)] $($f.Name)" -ForegroundColor Cyan
+      $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
+        -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
+        -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
+      if ($ok) { $embedded++ }
+      else {
+        Write-Host "`n  [STOP] SmartSync Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
+        Write-Host "         Naechster Run mit -SmartSync setzt fort." -ForegroundColor Red
+        return
+      }
+    }
+    Write-Host "[SmartSync] Alle $embedded ausstehende Dateien eingebettet.`n" -ForegroundColor Green
+  }
+
   # ================================================================
   # UPLOAD + EMBEDDING LOOP
   # ================================================================
@@ -1339,26 +1362,7 @@ build();
     }
   }
 
-  # ── SmartSync: Embed-only files (already uploaded, not yet embedded) ──
-  if (-not $UploadOnly -and $smartSyncEmbedOnly.Count -gt 0) {
-    Write-Host "`n[SmartSync] Starte Embedding für $($smartSyncEmbedOnly.Count) bereits hochgeladene Datei(en)..." -ForegroundColor Magenta
 
-    $embedIdx = 0
-    foreach ($f in $smartSyncEmbedOnly) {
-      $embedIdx++
-      $loc = "$DocumentFolder/$($f.Name)"
-      Write-Host "  [$embedIdx/$($smartSyncEmbedOnly.Count)] $($f.Name)" -ForegroundColor Cyan
-      $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
-        -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
-        -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
-      if ($ok) { $embedded++ }
-      else {
-        Write-Host "`n  [STOP] SmartSync Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
-        $embedFailed = $true
-        break
-      }
-    }
-  }
 
   Write-Progress -Activity "AnythingLLM Upload" -Completed
   $batchStopwatch.Stop()
