@@ -617,6 +617,7 @@ build();
     )
 
     $fileName = [System.IO.Path]::GetFileName($Location)
+    $ts = { (Get-Date).ToString('HH:mm:ss') }
 
     try {
       $embedBody = @{
@@ -624,17 +625,20 @@ build();
         deletes = @()
       } | ConvertTo-Json -Depth 3
 
+      Write-Host "    [$(& $ts)] Sende Embed-Request..." -ForegroundColor DarkGray
       Write-Progress -Activity "AnythingLLM Embedding" `
         -Status "Sende Embed: $fileName..." `
         -PercentComplete 0
 
+      # Embed request needs much more time than upload (large files = many chunks)
+      $embedRequestTimeout = [math]::Max($Timeout * 3, 900)
       $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
       $null = Invoke-RestMethod -Uri "$Url/api/v1/workspace/$Slug/update-embeddings" `
         -Method Post -Body $embedBody -ContentType 'application/json' `
-        -Headers $Headers -TimeoutSec $Timeout -ErrorAction Stop
+        -Headers $Headers -TimeoutSec $embedRequestTimeout -ErrorAction Stop
       $embedSw.Stop()
 
-      Write-Host "    Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte bis Server fertig..." -ForegroundColor DarkGray
+      Write-Host "    [$(& $ts)] Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte bis Server fertig..." -ForegroundColor DarkGray
 
       # Poll until cached:true - no hard timeout, keep waiting
       $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -649,7 +653,7 @@ build();
 
         # Show warning after EmbedTimeout but keep going
         if (-not $warned -and $elapsedSec -gt $EmbedTimeout) {
-          Write-Host "    [WARNUNG] $fileName braucht laenger als ${EmbedTimeout}s - Server arbeitet noch, warte weiter..." -ForegroundColor Yellow
+          Write-Host "    [$(& $ts)] [WARNUNG] $fileName braucht laenger als ${EmbedTimeout}s - Server arbeitet noch, warte weiter..." -ForegroundColor Yellow
           $warned = $true
         }
 
@@ -664,7 +668,7 @@ build();
             if ($match -and $match.cached) {
               $pollSw.Stop()
               Write-Progress -Activity "AnythingLLM Embedding" -Completed
-              Write-Host "    [OK] $fileName eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))" -ForegroundColor Green
+              Write-Host "    [$(& $ts)] [OK] $fileName eingebettet (Dauer: $($pollSw.Elapsed.ToString('mm\:ss')))" -ForegroundColor Green
               return $true
             }
           }
@@ -675,12 +679,12 @@ build();
         }
         catch {
           $pollErrors++
-          Write-Warning "    Polling-Fehler ($pollErrors): $($_.Exception.Message)"
+          Write-Warning "    [$(& $ts)] Polling-Fehler ($pollErrors): $($_.Exception.Message)"
           # After 5 consecutive poll errors, give up
           if ($pollErrors -ge 5) {
             $pollSw.Stop()
             Write-Progress -Activity "AnythingLLM Embedding" -Completed
-            Write-Warning "    [FEHLER] $fileName - Polling nach $pollErrors Fehlern abgebrochen."
+            Write-Warning "    [$(& $ts)] [FEHLER] $fileName - Polling nach $pollErrors Fehlern abgebrochen (Dauer: $($pollSw.Elapsed.ToString('mm\:ss')))."
             return $false
           }
         }
@@ -688,7 +692,7 @@ build();
     }
     catch {
       Write-Progress -Activity "AnythingLLM Embedding" -Completed
-      Write-Warning "    [FEHLER] $fileName - $($_.Exception.Message)"
+      Write-Warning "    [$(& $ts)] [FEHLER] $fileName - $($_.Exception.Message)"
       return $false
     }
   }
@@ -1220,7 +1224,7 @@ build();
       $logEntries += $logEntry
       Write-UploadLogEntry -Entry $logEntry -Path $logCsvPath
 
-      Write-Host "  [OK] $($file.Name) (${fileDuration}s) -> $documentLocation" -ForegroundColor Green
+      Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] [OK] $($file.Name) ($($file.SizeMB) MB, ${fileDuration}s) -> $documentLocation" -ForegroundColor Green
     }
     else {
       $failed++
@@ -1238,7 +1242,7 @@ build();
       $logEntries += $logEntry
       Write-UploadLogEntry -Entry $logEntry -Path $logCsvPath
 
-      Write-Host "  [FAIL] $($file.Name) (${fileDuration}s) - $errorText" -ForegroundColor Red
+      Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] [FAIL] $($file.Name) (${fileDuration}s) - $errorText" -ForegroundColor Red
       continue
     }
 
@@ -1248,7 +1252,7 @@ build();
       $validLocations = @($batchDocLocations | Where-Object { $_ })
 
       if ($validLocations.Count -gt 0) {
-        Write-Host "`n  [EMBED] Batch ${batchNum}: Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
+        Write-Host "`n  [$(Get-Date -Format 'HH:mm:ss')] [EMBED] Batch ${batchNum}: Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
         $embedIdx = 0
         foreach ($loc in $validLocations) {
           $embedIdx++
@@ -1286,7 +1290,7 @@ build();
     $validLocations = @($batchDocLocations | Where-Object { $_ })
 
     if ($validLocations.Count -gt 0) {
-      Write-Host "`n  [EMBED] Batch ${batchNum} (final): Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
+      Write-Host "`n  [$(Get-Date -Format 'HH:mm:ss')] [EMBED] Batch ${batchNum} (final): Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
       $embedIdx = 0
       foreach ($loc in $validLocations) {
         $embedIdx++
