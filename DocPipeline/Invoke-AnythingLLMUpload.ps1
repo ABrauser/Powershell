@@ -940,14 +940,16 @@ build();
       foreach ($f in $filesToUpload) {
         $localName = $f.Name
         $localStem = [System.IO.Path]::GetFileNameWithoutExtension($localName)
+        # AnythingLLM replaces spaces with dashes in filenames
+        $localStemNorm = $localStem.Replace(' ', '-')
 
-        # Try exact match first, then stem-based match
+        # Try exact match first, then normalized stem-based match
         $match = $serverDocs[$localName]
         if (-not $match) {
-          # Search for server doc whose name starts with the local filename stem
           foreach ($key in $serverDocs.Keys) {
-            if ($key -eq $localName -or
-                $key.StartsWith($localStem, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $keyNorm = $key.Replace(' ', '-')
+            if ($keyNorm -eq $localStemNorm -or
+                $keyNorm.StartsWith($localStemNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
               $match = $serverDocs[$key]
               Write-Host "    [SmartSync] Match: '$localName' -> '$key'" -ForegroundColor DarkGray
               break
