@@ -625,21 +625,49 @@ build();
         deletes = @()
       } | ConvertTo-Json -Depth 3
 
-      Write-Host "    [$(& $ts)] Sende Embed-Request fuer '$fileName' (HTTP-Timeout: $([math]::Max($Timeout * 3, 900))s)..." -ForegroundColor DarkGray
-      Write-Host "    [$(& $ts)] Warte auf Server-Antwort (kein Fortschritt bis Server antwortet)..." -ForegroundColor DarkYellow
-      Write-Progress -Activity "AnythingLLM Embedding" `
-        -Status "$fileName | Warte auf Server-Antwort..." `
-        -PercentComplete 0
-
       # Embed request needs much more time than upload (large files = many chunks)
       $embedRequestTimeout = [math]::Max($Timeout * 3, 900)
+      Write-Host "    [$(& $ts)] Sende Embed-Request fuer '$fileName' (HTTP-Timeout: ${embedRequestTimeout}s)..." -ForegroundColor DarkGray
+
+      # Run embed request async so we can show a live timer
+      $scriptBlock = {
+        param($uri, $body, $headers, $timeout)
+        Invoke-RestMethod -Uri $uri -Method Post -Body $body `
+          -ContentType 'application/json' -Headers $headers `
+          -TimeoutSec $timeout -ErrorAction Stop
+      }
+
+      $runspace = [PowerShell]::Create()
+      $null = $runspace.AddScript($scriptBlock).AddArgument(
+        "$Url/api/v1/workspace/$Slug/update-embeddings"
+      ).AddArgument($embedBody).AddArgument($Headers).AddArgument($embedRequestTimeout)
+
       $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
-      $null = Invoke-RestMethod -Uri "$Url/api/v1/workspace/$Slug/update-embeddings" `
-        -Method Post -Body $embedBody -ContentType 'application/json' `
-        -Headers $Headers -TimeoutSec $embedRequestTimeout -ErrorAction Stop
+      $asyncResult = $runspace.BeginInvoke()
+
+      # Live timer while waiting for server response
+      while (-not $asyncResult.IsCompleted) {
+        Start-Sleep -Seconds 5
+        $elapsedSec = [int]$embedSw.Elapsed.TotalSeconds
+        $elapsedStr = $embedSw.Elapsed.ToString('mm\:ss')
+        Write-Progress -Activity "AnythingLLM Embedding" `
+          -Status "$fileName | Server arbeitet... ${elapsedStr} / ${embedRequestTimeout}s" `
+          -PercentComplete ([math]::Min(95, [int]($elapsedSec / $embedRequestTimeout * 100)))
+      }
+
+      # Get result and check for errors
+      try { $null = $runspace.EndInvoke($asyncResult) } catch { }
       $embedSw.Stop()
 
-      Write-Host "    [$(& $ts)] Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte bis Server fertig..." -ForegroundColor DarkGray
+      if ($runspace.HadErrors) {
+        $errMsg = $runspace.Streams.Error | ForEach-Object { $_.Exception.Message } | Select-Object -First 1
+        $runspace.Dispose()
+        throw "Embed-Request fehlgeschlagen: $errMsg"
+      }
+      $runspace.Dispose()
+
+      Write-Progress -Activity "AnythingLLM Embedding" -Completed
+      Write-Host "    [$(& $ts)] Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Polling cached-Status..." -ForegroundColor DarkGray
 
       # Poll until cached:true - no hard timeout, keep waiting
       $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
