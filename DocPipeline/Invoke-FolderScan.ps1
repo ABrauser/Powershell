@@ -159,16 +159,37 @@ function Invoke-FolderScan {
   $offlineMode = $false
 
   if (-not $LoadLatest) {
-    $pathAccessible = Test-Path $Path -PathType Container
+    $pathExists = Test-Path $Path -PathType Container
+    if ($pathExists) {
+      # Path exists, but do we have read access?
+      try {
+        [void](Get-ChildItem -Path $Path -ErrorAction Stop | Select-Object -First 1)
+        $pathAccessible = $true
+      }
+      catch [System.UnauthorizedAccessException] {
+        Write-Warning "[Invoke-FolderScan] Pfad '$Path' existiert, aber Zugriff verweigert (keine Berechtigung)."
+        $pathAccessible = $false
+      }
+      catch [System.Management.Automation.ItemNotFoundException] {
+        $pathAccessible = $false
+      }
+      catch {
+        # Other errors (network timeout, etc.) - treat as inaccessible
+        Write-Warning "[Invoke-FolderScan] Pfad '$Path' existiert, aber Zugriff fehlgeschlagen: $($_.Exception.Message)"
+        $pathAccessible = $false
+      }
+    }
+
     if (-not $pathAccessible) {
-      # Path not reachable → try to load from CSV (offline fallback)
+      # Path not reachable or no access → try to load from CSV (offline fallback)
+      $reason = if (-not $pathExists) { 'nicht erreichbar' } else { 'nicht zugreifbar (fehlende Berechtigung)' }
       if (Test-Path $csvPath) {
-        Write-Warning "[Invoke-FolderScan] Pfad '$Path' ist nicht erreichbar. Lade letzten Scan aus CSV + Manifest..."
+        Write-Warning "[Invoke-FolderScan] Pfad '$Path' ist $reason. Lade letzten Scan aus CSV + Manifest..."
         $offlineMode = $true
-        $ResolvedPath = $Path.TrimEnd('\\')
+        $ResolvedPath = $Path.TrimEnd('\')
       }
       else {
-        Write-Error "[Invoke-FolderScan] Pfad '$Path' ist nicht erreichbar und keine vorherige CSV gefunden in '$csvPath'."
+        Write-Error "[Invoke-FolderScan] Pfad '$Path' ist $reason und keine vorherige CSV gefunden in '$csvPath'."
         return @()
       }
     }
@@ -254,8 +275,27 @@ function Invoke-FolderScan {
     $scanDuration = $stopwatch.Elapsed.TotalSeconds
 
     if (-not $FileList -or $FileList.Count -eq 0) {
-      Write-Warning "[Invoke-FolderScan] No files found in '$ResolvedPath'."
-      return @()
+      # 0 files: could be permission issue or genuinely empty folder
+      # Try CSV fallback before giving up
+      if (Test-Path $csvPath) {
+        Write-Warning "[Invoke-FolderScan] Keine Dateien in '$ResolvedPath' gefunden (evtl. fehlende Berechtigung?). Lade letzten Scan aus CSV..."
+        $offlineMode = $true
+        $FileList = Import-Csv -Path $csvPath -Encoding UTF8
+        $FileList = $FileList | ForEach-Object {
+          $_.SizeBytes = [long]$_.SizeBytes
+          $_.SizeKB = [double]$_.SizeKB
+          $_.SizeMB = [double]$_.SizeMB
+          $_.IsReadOnly = [bool]($_.IsReadOnly -eq 'True')
+          $_.IsConvertible = [bool]($_.IsConvertible -eq 'True')
+          $_
+        }
+        if ($FileList -isnot [System.Array]) { $FileList = @($FileList) }
+        Write-Host "[Invoke-FolderScan] Loaded $($FileList.Count) files from CSV (Fallback)." -ForegroundColor Green
+      }
+      else {
+        Write-Warning "[Invoke-FolderScan] No files found in '$ResolvedPath'. If this is a permissions issue, run as admin or check folder access."
+        return @()
+      }
     }
     if ($FileList -isnot [System.Array]) { $FileList = @($FileList) }
 
@@ -434,8 +474,41 @@ function Invoke-FolderScan {
     if ($hasManifest) {
       Write-Host "[Invoke-FolderScan] Pipeline-Modus: Manifest" -ForegroundColor DarkGray
     }
-    if ($stagingAccessible -or $ergebnisAccessible) {
-      Write-Host "[Invoke-FolderScan] Pipeline-Modus: Test-Path Fallback aktiv" -ForegroundColor DarkGray
+
+    # ─── Pre-cache directory contents for Test-Path fallback (performance) ───
+    # Instead of calling Test-Path per file (39k+ calls = very slow on network),
+    # read directory contents once into HashSets for O(1) lookup.
+    $stagingFileCache = $null
+    $ergebnisFileCache = $null
+
+    if ($stagingAccessible) {
+      Write-Host "[Invoke-FolderScan] Staging-Cache: Lese Verzeichnis '$StagingPath'..." -ForegroundColor DarkGray -NoNewline
+      $stagingCacheSw = [System.Diagnostics.Stopwatch]::StartNew()
+      $stagingFileCache = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      Get-ChildItem -Path $StagingPath -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.FullName.StartsWith($StagingPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+          [void]$stagingFileCache.Add($_.FullName.Substring($StagingPath.TrimEnd('\').Length).TrimStart('\'))
+        }
+      }
+      $stagingCacheSw.Stop()
+      Write-Host " $($stagingFileCache.Count) Dateien ($([math]::Round($stagingCacheSw.Elapsed.TotalSeconds, 2))s)" -ForegroundColor DarkGray
+    }
+
+    if ($ergebnisAccessible) {
+      Write-Host "[Invoke-FolderScan] Ergebnis-Cache: Lese Verzeichnis '$ErgebnisPath'..." -ForegroundColor DarkGray -NoNewline
+      $ergebnisCacheSw = [System.Diagnostics.Stopwatch]::StartNew()
+      $ergebnisFileCache = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      Get-ChildItem -Path $ErgebnisPath -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.FullName.StartsWith($ErgebnisPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+          [void]$ergebnisFileCache.Add($_.FullName.Substring($ErgebnisPath.TrimEnd('\').Length).TrimStart('\'))
+        }
+      }
+      $ergebnisCacheSw.Stop()
+      Write-Host " $($ergebnisFileCache.Count) Dateien ($([math]::Round($ergebnisCacheSw.Elapsed.TotalSeconds, 2))s)" -ForegroundColor DarkGray
+    }
+
+    if ($stagingFileCache -or $ergebnisFileCache) {
+      Write-Host "[Invoke-FolderScan] Pipeline-Modus: Datei-Cache Fallback aktiv (statt Test-Path)" -ForegroundColor DarkGray
     }
 
     $pipelineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -465,20 +538,18 @@ function Invoke-FolderScan {
         }
       }
 
-      # 3. Fallback: Test-Path (only if paths are accessible and no manifest hit)
-      if ($status -eq 'offen' -and $ergebnisAccessible -and $relativePath) {
+      # 3. Fallback: cached file lookup (replaces slow per-file Test-Path)
+      if ($status -eq 'offen' -and $ergebnisFileCache -and $relativePath) {
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($relativePath)
         $relDir = [System.IO.Path]::GetDirectoryName($relativePath)
         $relMdPath = if ([string]::IsNullOrEmpty($relDir)) { "$baseName.md" } else { Join-Path $relDir "$baseName.md" }
-        $mdPath = Join-Path $ErgebnisPath $relMdPath
-        if (Test-Path $mdPath) {
+        if ($ergebnisFileCache.Contains($relMdPath)) {
           $status = 'veredelt'
         }
       }
 
-      if ($status -eq 'offen' -and $stagingAccessible -and $relativePath) {
-        $stagingFile = Join-Path $StagingPath $relativePath
-        if (Test-Path $stagingFile) {
+      if ($status -eq 'offen' -and $stagingFileCache -and $relativePath) {
+        if ($stagingFileCache.Contains($relativePath)) {
           $status = 'kopiert'
         }
       }

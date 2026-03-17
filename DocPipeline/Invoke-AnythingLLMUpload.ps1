@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Uploads processed files to AnythingLLM via API and embeds them into a workspace.
 
@@ -845,8 +845,8 @@ build();
 
         # File part
         $fileHeader = "--$boundary$LF" +
-          "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"$LF" +
-          "Content-Type: application/octet-stream$LF$LF"
+        "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"$LF" +
+        "Content-Type: application/octet-stream$LF$LF"
         $bodyParts.Add($enc.GetBytes($fileHeader))
         $bodyParts.Add($fileBytes)
         $bodyParts.Add($enc.GetBytes($LF))
@@ -1107,18 +1107,18 @@ build();
 
   # Run summary
   $runEntry = @{
-    date            = $batchStart.ToString('yyyy-MM-dd HH:mm:ss')
-    files           = $uploaded + $failed
-    uploaded        = $uploaded
-    embedded        = $embedded
-    failed          = $failed
-    skipped         = $skippedExisting
-    totalSeconds    = [math]::Round($batchDuration, 2)
-    avgPerFile      = if ($uploaded -gt 0) { [math]::Round($totalUploadTime / $uploaded, 2) } else { 0 }
-    totalSizeMB     = $totalSizeMB
-    workspaceSlug   = $WorkspaceSlug
-    documentFolder  = $DocumentFolder
-    uploadOnly      = [bool]$UploadOnly
+    date           = $batchStart.ToString('yyyy-MM-dd HH:mm:ss')
+    files          = $uploaded + $failed
+    uploaded       = $uploaded
+    embedded       = $embedded
+    failed         = $failed
+    skipped        = $skippedExisting
+    totalSeconds   = [math]::Round($batchDuration, 2)
+    avgPerFile     = if ($uploaded -gt 0) { [math]::Round($totalUploadTime / $uploaded, 2) } else { 0 }
+    totalSizeMB    = $totalSizeMB
+    workspaceSlug  = $WorkspaceSlug
+    documentFolder = $DocumentFolder
+    uploadOnly     = [bool]$UploadOnly
   }
 
   $existingRuns = @()
