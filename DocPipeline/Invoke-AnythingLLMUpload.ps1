@@ -1121,6 +1121,9 @@ build();
 
       if ($validLocations.Count -gt 0) {
         Write-Host "`n  [EMBED] Batch ${batchNum}: Embedding $($validLocations.Count) documents into workspace '$WorkspaceSlug'..." -ForegroundColor Yellow
+        foreach ($loc in $validLocations) {
+          Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
+        }
 
         try {
           $embedBody = @{
@@ -1215,6 +1218,9 @@ build();
 
     if ($validLocations.Count -gt 0) {
       Write-Host "`n  [EMBED] Batch ${batchNum} (final): Embedding $($validLocations.Count) documents..." -ForegroundColor Yellow
+      foreach ($loc in $validLocations) {
+        Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
+      }
 
       try {
         $embedBody = @{
@@ -1306,6 +1312,9 @@ build();
       $batchLocs = @($embedOnlyLocations[$i..([math]::Min($i + $BatchSize - 1, $embedOnlyLocations.Count - 1))])
 
       Write-Host "`n  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Embedding $($batchLocs.Count) Dokumente..." -ForegroundColor Yellow
+      foreach ($loc in $batchLocs) {
+        Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
+      }
 
       try {
         $embedBody = @{
