@@ -602,6 +602,85 @@ build();
     $Entry | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -Append:(-not $needsHeader)
   }
 
+  # Helper: embed a single document and poll until cached or timeout
+  # Returns $true if embedding succeeded, $false otherwise
+  function Invoke-SingleEmbed {
+    param(
+      [string]$Location,
+      [string]$Url,
+      [string]$Slug,
+      [string]$Folder,
+      [hashtable]$Headers,
+      [int]$Timeout,
+      [int]$EmbedTimeout,
+      [int]$PollInterval
+    )
+
+    $fileName = [System.IO.Path]::GetFileName($Location)
+
+    try {
+      $embedBody = @{
+        adds    = @($Location)
+        deletes = @()
+      } | ConvertTo-Json -Depth 3
+
+      Write-Progress -Activity "AnythingLLM Embedding" `
+        -Status "Sende Embed: $fileName..." `
+        -PercentComplete 0
+
+      $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
+      $null = Invoke-RestMethod -Uri "$Url/api/v1/workspace/$Slug/update-embeddings" `
+        -Method Post -Body $embedBody -ContentType 'application/json' `
+        -Headers $Headers -TimeoutSec $Timeout -ErrorAction Stop
+      $embedSw.Stop()
+
+      Write-Host "    Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Polling..." -ForegroundColor DarkGray
+
+      # Poll until cached
+      $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbedTimeout)
+      $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
+
+      while ([DateTime]::UtcNow -lt $pollDeadline) {
+        Start-Sleep -Seconds $PollInterval
+
+        $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
+        $remainingSec = [math]::Max(0, $EmbedTimeout - [int]$pollSw.Elapsed.TotalSeconds)
+
+        try {
+          $docsResp = Invoke-RestMethod -Uri "$Url/api/v1/documents/folder/$Folder" `
+            -Method Get -Headers $Headers -TimeoutSec 30 -ErrorAction Stop
+
+          if ($docsResp.documents) {
+            $match = $docsResp.documents | Where-Object { $_.name -eq $fileName } | Select-Object -First 1
+            if ($match -and $match.cached) {
+              $pollSw.Stop()
+              Write-Progress -Activity "AnythingLLM Embedding" -Completed
+              Write-Host "    [OK] $fileName eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))" -ForegroundColor Green
+              return $true
+            }
+          }
+
+          Write-Progress -Activity "AnythingLLM Embedding" `
+            -Status "$fileName | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
+            -PercentComplete ([math]::Min(90, [int]($pollSw.Elapsed.TotalSeconds / $EmbedTimeout * 100)))
+        }
+        catch {
+          Write-Warning "    Polling-Fehler: $($_.Exception.Message)"
+        }
+      }
+
+      $pollSw.Stop()
+      Write-Progress -Activity "AnythingLLM Embedding" -Completed
+      Write-Warning "    [TIMEOUT] $fileName nach ${EmbedTimeout}s nicht fertig eingebettet."
+      return $false
+    }
+    catch {
+      Write-Progress -Activity "AnythingLLM Embedding" -Completed
+      Write-Warning "    [FEHLER] $fileName - $($_.Exception.Message)"
+      return $false
+    }
+  }
+
   # ================================================================
   # API KEY HANDLING (SecureString session cache)
   # ================================================================
@@ -1114,88 +1193,21 @@ build();
       continue
     }
 
-    # ── Phase 2: Batch Embedding ──
+    # ── Phase 2: Per-File Embedding ──
     if (-not $UploadOnly -and $batchCounter -ge $BatchSize) {
       $batchNum++
       $validLocations = @($batchDocLocations | Where-Object { $_ })
 
       if ($validLocations.Count -gt 0) {
-        Write-Host "`n  [EMBED] Batch ${batchNum}: Embedding $($validLocations.Count) documents into workspace '$WorkspaceSlug'..." -ForegroundColor Yellow
+        Write-Host "`n  [EMBED] Batch ${batchNum}: Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
+        $embedIdx = 0
         foreach ($loc in $validLocations) {
-          Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
-        }
-
-        try {
-          $embedBody = @{
-            adds    = $validLocations
-            deletes = @()
-          } | ConvertTo-Json -Depth 3
-
-          # Show progress during the embed API call (can take a while)
-          Write-Progress -Activity "AnythingLLM Embedding" `
-            -Status "Batch ${batchNum}: Sende Embed-Request ($($validLocations.Count) Dokumente)..." `
-            -PercentComplete 0
-
-          $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
-          $null = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/workspace/$WorkspaceSlug/update-embeddings" `
-            -Method Post -Body $embedBody -ContentType 'application/json' `
-            -Headers $authHeaders -TimeoutSec $TimeoutSec -ErrorAction Stop
-          $embedSw.Stop()
-
-          Write-Host "  [EMBED] Batch ${batchNum}: Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte auf Verarbeitung..." -ForegroundColor DarkGray
-
-          # Poll embedding status
-          $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbeddingTimeoutSec)
-          $allCached = $false
-          $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
-
-          while (-not $allCached -and [DateTime]::UtcNow -lt $pollDeadline) {
-            Start-Sleep -Seconds $EmbeddingPollIntervalSec
-
-            $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
-            $remainingSec = [math]::Max(0, $EmbeddingTimeoutSec - [int]$pollSw.Elapsed.TotalSeconds)
-
-            try {
-              $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
-                -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
-
-              if ($docsResponse.documents) {
-                $locationNames = $validLocations | ForEach-Object { [System.IO.Path]::GetFileName($_) }
-                $matchingDocs = @($docsResponse.documents | Where-Object { $locationNames -contains $_.name })
-                $cachedCount = @($matchingDocs | Where-Object { $_.cached -eq $true }).Count
-                $pctEmbed = [math]::Min(100, [math]::Round(($cachedCount / [math]::Max(1, $validLocations.Count)) * 100))
-
-                Write-Progress -Activity "AnythingLLM Embedding" `
-                  -Status "Batch ${batchNum}: $cachedCount/$($validLocations.Count) eingebettet ($pctEmbed%) | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
-                  -PercentComplete $pctEmbed
-
-                if ($cachedCount -ge $validLocations.Count) {
-                  $allCached = $true
-                  $embedded += $cachedCount
-                  $pollSw.Stop()
-                  Write-Host "  [EMBED] Batch ${batchNum}: Alle $cachedCount Dokumente eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))." -ForegroundColor Green
-                }
-              }
-              else {
-                Write-Progress -Activity "AnythingLLM Embedding" `
-                  -Status "Batch ${batchNum}: Warte auf Server-Antwort... | ${elapsedStr} vergangen" `
-                  -PercentComplete 5
-              }
-            }
-            catch {
-              Write-Warning "[Invoke-AnythingLLMUpload] Embedding poll error: $($_.Exception.Message)"
-            }
-          }
-
-          if (-not $allCached) {
-            $pollSw.Stop()
-            Write-Warning "[Invoke-AnythingLLMUpload] Embedding timeout fuer Batch ${batchNum} nach ${EmbeddingTimeoutSec}s. Einige Dokumente sind evtl. noch nicht eingebettet."
-          }
-
-          Write-Progress -Activity "AnythingLLM Embedding" -Completed
-        }
-        catch {
-          Write-Warning "[Invoke-AnythingLLMUpload] Embedding request failed for Batch ${batchNum}: $($_.Exception.Message)"
+          $embedIdx++
+          Write-Host "  [$embedIdx/$($validLocations.Count)] $([System.IO.Path]::GetFileName($loc))" -ForegroundColor Cyan
+          $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
+            -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
+            -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
+          if ($ok) { $embedded++ }
         }
       }
 
@@ -1217,80 +1229,15 @@ build();
     $validLocations = @($batchDocLocations | Where-Object { $_ })
 
     if ($validLocations.Count -gt 0) {
-      Write-Host "`n  [EMBED] Batch ${batchNum} (final): Embedding $($validLocations.Count) documents..." -ForegroundColor Yellow
+      Write-Host "`n  [EMBED] Batch ${batchNum} (final): Embedding $($validLocations.Count) Dokumente einzeln..." -ForegroundColor Yellow
+      $embedIdx = 0
       foreach ($loc in $validLocations) {
-        Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
-      }
-
-      try {
-        $embedBody = @{
-          adds    = $validLocations
-          deletes = @()
-        } | ConvertTo-Json -Depth 3
-
-        Write-Progress -Activity "AnythingLLM Embedding" `
-          -Status "Batch ${batchNum} (final): Sende Embed-Request ($($validLocations.Count) Dokumente)..." `
-          -PercentComplete 0
-
-        $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
-        $null = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/workspace/$WorkspaceSlug/update-embeddings" `
-          -Method Post -Body $embedBody -ContentType 'application/json' `
-          -Headers $authHeaders -TimeoutSec $TimeoutSec -ErrorAction Stop
-        $embedSw.Stop()
-
-        Write-Host "  [EMBED] Batch ${batchNum}: Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte auf Verarbeitung..." -ForegroundColor DarkGray
-
-        $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbeddingTimeoutSec)
-        $allCached = $false
-        $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
-
-        while (-not $allCached -and [DateTime]::UtcNow -lt $pollDeadline) {
-          Start-Sleep -Seconds $EmbeddingPollIntervalSec
-
-          $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
-          $remainingSec = [math]::Max(0, $EmbeddingTimeoutSec - [int]$pollSw.Elapsed.TotalSeconds)
-
-          try {
-            $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
-              -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
-
-            if ($docsResponse.documents) {
-              $locationNames = $validLocations | ForEach-Object { [System.IO.Path]::GetFileName($_) }
-              $matchingDocs = @($docsResponse.documents | Where-Object { $locationNames -contains $_.name })
-              $cachedCount = @($matchingDocs | Where-Object { $_.cached -eq $true }).Count
-              $pctEmbed = [math]::Min(100, [math]::Round(($cachedCount / [math]::Max(1, $validLocations.Count)) * 100))
-
-              Write-Progress -Activity "AnythingLLM Embedding" `
-                -Status "Batch ${batchNum}: $cachedCount/$($validLocations.Count) eingebettet ($pctEmbed%) | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
-                -PercentComplete $pctEmbed
-
-              if ($cachedCount -ge $validLocations.Count) {
-                $allCached = $true
-                $embedded += $cachedCount
-                $pollSw.Stop()
-                Write-Host "  [EMBED] Batch ${batchNum}: Alle $cachedCount Dokumente eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))." -ForegroundColor Green
-              }
-            }
-            else {
-              Write-Progress -Activity "AnythingLLM Embedding" `
-                -Status "Batch ${batchNum}: Warte auf Server-Antwort... | ${elapsedStr} vergangen" `
-                -PercentComplete 5
-            }
-          }
-          catch {
-            Write-Warning "[Invoke-AnythingLLMUpload] Embedding poll error: $($_.Exception.Message)"
-          }
-        }
-
-        if (-not $allCached) {
-          $pollSw.Stop()
-          Write-Warning "[Invoke-AnythingLLMUpload] Embedding timeout fuer finalen Batch nach ${EmbeddingTimeoutSec}s."
-        }
-
-        Write-Progress -Activity "AnythingLLM Embedding" -Completed
-      }
-      catch {
-        Write-Warning "[Invoke-AnythingLLMUpload] Embedding request failed for final batch: $($_.Exception.Message)"
+        $embedIdx++
+        Write-Host "  [$embedIdx/$($validLocations.Count)] $([System.IO.Path]::GetFileName($loc))" -ForegroundColor Cyan
+        $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
+          -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
+          -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
+        if ($ok) { $embedded++ }
       }
     }
   }
@@ -1299,94 +1246,15 @@ build();
   if (-not $UploadOnly -and $smartSyncEmbedOnly.Count -gt 0) {
     Write-Host "`n[SmartSync] Starte Embedding für $($smartSyncEmbedOnly.Count) bereits hochgeladene Datei(en)..." -ForegroundColor Magenta
 
-    # Build document locations from folder + filename
-    $embedOnlyLocations = @()
+    $embedIdx = 0
     foreach ($f in $smartSyncEmbedOnly) {
-      $embedOnlyLocations += "$DocumentFolder/$($f.Name)"
-    }
-
-    # Embed in batches
-    $embedOnlyBatchNum = 0
-    for ($i = 0; $i -lt $embedOnlyLocations.Count; $i += $BatchSize) {
-      $embedOnlyBatchNum++
-      $batchLocs = @($embedOnlyLocations[$i..([math]::Min($i + $BatchSize - 1, $embedOnlyLocations.Count - 1))])
-
-      Write-Host "`n  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Embedding $($batchLocs.Count) Dokumente..." -ForegroundColor Yellow
-      foreach ($loc in $batchLocs) {
-        Write-Host "    -> $([System.IO.Path]::GetFileName($loc))" -ForegroundColor DarkGray
-      }
-
-      try {
-        $embedBody = @{
-          adds    = $batchLocs
-          deletes = @()
-        } | ConvertTo-Json -Depth 3
-
-        Write-Progress -Activity "AnythingLLM SmartSync Embedding" `
-          -Status "Batch ${embedOnlyBatchNum}: Sende Embed-Request ($($batchLocs.Count) Dokumente)..." `
-          -PercentComplete 0
-
-        $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
-        $null = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/workspace/$WorkspaceSlug/update-embeddings" `
-          -Method Post -Body $embedBody -ContentType 'application/json' `
-          -Headers $authHeaders -TimeoutSec $TimeoutSec -ErrorAction Stop
-        $embedSw.Stop()
-
-        Write-Host "  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte auf Verarbeitung..." -ForegroundColor DarkGray
-
-        $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbeddingTimeoutSec)
-        $allCached = $false
-        $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
-
-        while (-not $allCached -and [DateTime]::UtcNow -lt $pollDeadline) {
-          Start-Sleep -Seconds $EmbeddingPollIntervalSec
-
-          $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
-          $remainingSec = [math]::Max(0, $EmbeddingTimeoutSec - [int]$pollSw.Elapsed.TotalSeconds)
-
-          try {
-            $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
-              -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
-
-            if ($docsResponse.documents) {
-              $batchNames = $batchLocs | ForEach-Object { [System.IO.Path]::GetFileName($_) }
-              $matchingDocs = @($docsResponse.documents | Where-Object { $batchNames -contains $_.name })
-              $cachedCount = @($matchingDocs | Where-Object { $_.cached -eq $true }).Count
-              $pctEmbed = [math]::Min(100, [math]::Round(($cachedCount / [math]::Max(1, $batchLocs.Count)) * 100))
-
-              Write-Progress -Activity "AnythingLLM SmartSync Embedding" `
-                -Status "Batch ${embedOnlyBatchNum}: $cachedCount/$($batchLocs.Count) eingebettet ($pctEmbed%) | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
-                -PercentComplete $pctEmbed
-
-              if ($cachedCount -ge $batchLocs.Count) {
-                $allCached = $true
-                $embedded += $cachedCount
-                $pollSw.Stop()
-                Write-Host "  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Alle $cachedCount Dokumente eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))." -ForegroundColor Green
-              }
-            }
-          }
-          catch {
-            Write-Warning "[SmartSync] Embedding poll error: $($_.Exception.Message)"
-          }
-        }
-
-        if (-not $allCached) {
-          $pollSw.Stop()
-          Write-Warning "[SmartSync] Embedding timeout fuer Batch ${embedOnlyBatchNum} nach ${EmbeddingTimeoutSec}s."
-        }
-
-        Write-Progress -Activity "AnythingLLM SmartSync Embedding" -Completed
-      }
-      catch {
-        Write-Warning "[SmartSync] Embedding request fehlgeschlagen fuer Batch ${embedOnlyBatchNum}: $($_.Exception.Message)"
-      }
-
-      # Batch pause
-      if ($i + $BatchSize -lt $embedOnlyLocations.Count -and $BatchPauseSec -gt 0) {
-        Write-Host "  [PAUSE] ${BatchPauseSec}s..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds $BatchPauseSec
-      }
+      $embedIdx++
+      $loc = "$DocumentFolder/$($f.Name)"
+      Write-Host "  [$embedIdx/$($smartSyncEmbedOnly.Count)] $($f.Name)" -ForegroundColor Cyan
+      $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
+        -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
+        -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
+      if ($ok) { $embedded++ }
     }
   }
 
