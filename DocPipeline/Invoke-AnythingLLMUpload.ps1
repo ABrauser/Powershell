@@ -588,6 +588,13 @@ build();
   $logCsvPath = Join-Path $LogDir 'upload_log.csv'
   $runsJsonPath = Join-Path $LogDir 'upload_runs.json'
 
+  # Helper: write a single log entry immediately (crash-safe)
+  function Write-UploadLogEntry {
+    param([PSCustomObject]$Entry, [string]$Path)
+    $needsHeader = -not (Test-Path $Path)
+    $Entry | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -Append:(-not $needsHeader)
+  }
+
   # ================================================================
   # API KEY HANDLING (SecureString session cache)
   # ================================================================
@@ -946,7 +953,7 @@ build();
         documentLocation = $documentLocation
       }
 
-      $logEntries += [PSCustomObject]@{
+      $logEntry = [PSCustomObject]@{
         Timestamp        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         File             = $file.Name
         RelativePath     = $file.RelativePath
@@ -956,13 +963,15 @@ build();
         DocumentLocation = $documentLocation
         Error            = ''
       }
+      $logEntries += $logEntry
+      Write-UploadLogEntry -Entry $logEntry -Path $logCsvPath
 
       Write-Host "  [OK] $($file.Name) (${fileDuration}s) -> $documentLocation" -ForegroundColor Green
     }
     else {
       $failed++
 
-      $logEntries += [PSCustomObject]@{
+      $logEntry = [PSCustomObject]@{
         Timestamp        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         File             = $file.Name
         RelativePath     = $file.RelativePath
@@ -972,6 +981,8 @@ build();
         DocumentLocation = ''
         Error            = $errorText
       }
+      $logEntries += $logEntry
+      Write-UploadLogEntry -Entry $logEntry -Path $logCsvPath
 
       Write-Host "  [FAIL] $($file.Name) (${fileDuration}s) - $errorText" -ForegroundColor Red
       continue
@@ -1120,10 +1131,8 @@ build();
   $batchEnd = Get-Date
   $batchDuration = ($batchEnd - $batchStart).TotalSeconds
 
-  # Per-file log (append)
+  # Per-file log (already written immediately per file, just show path)
   if ($logEntries.Count -gt 0) {
-    $logExists = Test-Path $logCsvPath
-    $logEntries | Export-Csv -Path $logCsvPath -NoTypeInformation -Encoding UTF8 -Append:$logExists
     Write-Host "`n[Invoke-AnythingLLMUpload] Per-file log: $logCsvPath" -ForegroundColor DarkGray
   }
 
