@@ -48,10 +48,10 @@
     Defaults to @('.md').
 
 .PARAMETER BatchSize
-    Number of files to upload per batch before pausing. Default: 10.
+    Number of files to upload per batch before pausing. Default: 5.
 
 .PARAMETER BatchPauseSec
-    Seconds to pause between batches (gives Vector-DB time). Default: 5.
+    Seconds to pause between batches (gives Vector-DB time). Default: 15.
 
 .PARAMETER EmbeddingTimeoutSec
     Maximum seconds to wait for embedding to complete per batch. Default: 300.
@@ -70,7 +70,7 @@
     Useful for separating upload from embedding.
 
 .PARAMETER TimeoutSec
-    Timeout in seconds per API upload call. Default: 120.
+    Timeout in seconds per API upload call. Default: 300.
 
 .PARAMETER RetryCount
     Number of retries on API failure per file. Default: 3.
@@ -156,13 +156,13 @@ function Invoke-AnythingLLMUpload {
     [Parameter(ParameterSetName = 'Csv')]
     [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(1, 500)]
-    [int]$BatchSize = 10,
+    [int]$BatchSize = 5,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
     [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(0, 300)]
-    [int]$BatchPauseSec = 5,
+    [int]$BatchPauseSec = 15,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
@@ -195,7 +195,7 @@ function Invoke-AnythingLLMUpload {
     [Parameter(ParameterSetName = 'Csv')]
     [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(10, 3600)]
-    [int]$TimeoutSec = 120,
+    [int]$TimeoutSec = 300,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
@@ -412,8 +412,8 @@ function Invoke-AnythingLLMUpload {
         <div class="opt-group">
           <h4>Batch</h4>
           <div class="opt-row">
-            <label>Size <input type="number" id="allm-batch" value="10" min="1" max="500" oninput="save();build()"></label>
-            <label>Pause <input type="number" id="allm-pause" value="5" min="0" max="300" oninput="save();build()"> Sek.</label>
+            <label>Size <input type="number" id="allm-batch" value="5" min="1" max="500" oninput="save();build()"></label>
+            <label>Pause <input type="number" id="allm-pause" value="15" min="0" max="300" oninput="save();build()"> Sek.</label>
           </div>
         </div>
         <div class="opt-group">
@@ -427,7 +427,7 @@ function Invoke-AnythingLLMUpload {
           <h4>Retries &amp; Timeout</h4>
           <div class="opt-row">
             <label>Retries <input type="number" id="allm-retries" value="3" min="0" max="10" oninput="save();build()"></label>
-            <label>Timeout <input type="number" id="allm-timeout" value="120" min="10" max="3600" oninput="save();build()"> Sek./Upload</label>
+            <label>Timeout <input type="number" id="allm-timeout" value="300" min="10" max="3600" oninput="save();build()"> Sek./Upload</label>
           </div>
         </div>
         <div class="opt-group">
@@ -467,12 +467,12 @@ function build() {
   var docFolder = v('allm-docfolder') || 'pipeline-upload';
   var ext = v('allm-ext') || '.md';
   var folders = v('allm-folders') || '';
-  var batch = parseInt(v('allm-batch') || '10', 10);
-  var pause = parseInt(v('allm-pause') || '5', 10);
+  var batch = parseInt(v('allm-batch') || '5', 10);
+  var pause = parseInt(v('allm-pause') || '15', 10);
   var embTimeout = parseInt(v('allm-emb-timeout') || '300', 10);
   var embPoll = parseInt(v('allm-emb-poll') || '10', 10);
   var retries = parseInt(v('allm-retries') || '3', 10);
-  var timeout = parseInt(v('allm-timeout') || '120', 10);
+  var timeout = parseInt(v('allm-timeout') || '300', 10);
   var skip = v('allm-skip');
   var uploadOnly = v('allm-uploadonly');
 
@@ -496,8 +496,8 @@ function build() {
   }
 
   var extras = '';
-  if (batch !== 10) extras += ' -BatchSize ' + batch;
-  if (pause !== 5) extras += ' -BatchPauseSec ' + pause;
+  if (batch !== 5) extras += ' -BatchSize ' + batch;
+  if (pause !== 15) extras += ' -BatchPauseSec ' + pause;
   if (embTimeout !== 300) extras += ' -EmbeddingTimeoutSec ' + embTimeout;
   if (embPoll !== 10) extras += ' -EmbeddingPollIntervalSec ' + embPoll;
   if (!skip) extras += ' -Force';
