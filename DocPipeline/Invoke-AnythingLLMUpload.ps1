@@ -211,6 +211,10 @@ function Invoke-AnythingLLMUpload {
     [Parameter(ParameterSetName = 'Csv')]
     [string]$LogDir,
 
+    [Parameter(ParameterSetName = 'Folder')]
+    [Parameter(ParameterSetName = 'Csv')]
+    [switch]$SmartSync,
+
     [Parameter(Mandatory, ParameterSetName = 'Gui')]
     [switch]$Gui,
 
@@ -435,6 +439,7 @@ function Invoke-AnythingLLMUpload {
           <div class="opt-row">
             <label><input type="checkbox" id="allm-skip" checked onchange="save();build()"> Skip existing</label>
             <label><input type="checkbox" id="allm-uploadonly" onchange="save();build()"> Upload only</label>
+            <label><input type="checkbox" id="allm-smartsync" onchange="save();build()"> SmartSync</label>
           </div>
         </div>
       </div>
@@ -503,8 +508,10 @@ function build() {
   if (!skip) extras += ' -Force';
   if (uploadOnly) extras += ' -UploadOnly';
   if (retries !== 3) extras += ' -RetryCount ' + retries;
-  if (timeout !== 120) extras += ' -TimeoutSec ' + timeout;
+  if (timeout !== 300) extras += ' -TimeoutSec ' + timeout;
   if (extras) cmd += ' ' + bt + '\n ' + extras.trim();
+  var smartsync = v('allm-smartsync');
+  if (smartsync) cmd += ' ' + bt + '\n  -SmartSync';
 
   el.textContent = cmd;
 }
@@ -773,10 +780,118 @@ build();
   }
 
   # ================================================================
-  # SKIP EXISTING CHECK (based on upload log)
+  # SMARTSYNC: SERVER-SIDE PRE-CHECK
+  # ================================================================
+  $smartSyncEmbedOnly = @()  # Files that are uploaded but need embedding
+  $smartSyncSkipped = 0
+
+  if ($SmartSync) {
+    Write-Host "`n[SmartSync] Server-Abgleich gestartet..." -ForegroundColor Magenta
+
+    # Step 1: Get documents in the AnythingLLM folder
+    $serverDocs = @{}
+    try {
+      $folderEncoded = [System.Uri]::EscapeDataString($DocumentFolder)
+      $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+        -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
+
+      if ($docsResponse.documents) {
+        foreach ($doc in $docsResponse.documents) {
+          $docName = $doc.name
+          if (-not $docName) { $docName = $doc.title }
+          if ($docName) {
+            $serverDocs[$docName] = [PSCustomObject]@{
+              Name     = $docName
+              Cached   = [bool]$doc.cached
+              Location = if ($doc.location) { $doc.location } else { '' }
+            }
+          }
+        }
+      }
+      Write-Host "[SmartSync] Dokumente im Ordner '$DocumentFolder': $($serverDocs.Count)" -ForegroundColor Magenta
+    }
+    catch {
+      Write-Warning "[SmartSync] Konnte Dokumente nicht abfragen: $($_.Exception.Message)"
+      Write-Warning "[SmartSync] Fahre ohne Server-Abgleich fort (Fallback auf lokales Log)."
+      $SmartSync = $false
+    }
+
+    if ($SmartSync -and $serverDocs.Count -gt 0) {
+      # Step 2: Classify files into 3 stages
+      $needUpload = @()
+      $needEmbedOnly = @()
+      $alreadyDone = @()
+      $inProgress = @()
+
+      foreach ($f in $filesToUpload) {
+        $match = $serverDocs[$f.Name]
+        if (-not $match) {
+          $needUpload += $f
+        }
+        elseif ($match.Cached) {
+          $alreadyDone += $f
+        }
+        else {
+          $inProgress += $f
+        }
+      }
+
+      # Step 3: Handle in-progress files (cached: false)
+      # Wait 30s and re-check to detect if server is still processing
+      if ($inProgress.Count -gt 0) {
+        Write-Host "[SmartSync] $($inProgress.Count) Datei(en) hochgeladen aber cached=false. Prüfe ob Embedding läuft..." -ForegroundColor Yellow
+        Write-Host "[SmartSync] Warte 30 Sekunden und prüfe erneut..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds 30
+
+        try {
+          $docsResponse2 = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+            -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
+
+          $serverDocs2 = @{}
+          if ($docsResponse2.documents) {
+            foreach ($doc in $docsResponse2.documents) {
+              $docName = $doc.name
+              if (-not $docName) { $docName = $doc.title }
+              if ($docName) { $serverDocs2[$docName] = [bool]$doc.cached }
+            }
+          }
+
+          foreach ($f in $inProgress) {
+            $nowCached = $serverDocs2[$f.Name]
+            if ($nowCached) {
+              Write-Host "  [SmartSync] $($f.Name) -> jetzt embedded (war in Verarbeitung)" -ForegroundColor Green
+              $alreadyDone += $f
+            }
+            else {
+              Write-Host "  [SmartSync] $($f.Name) -> noch nicht embedded, wird in Embed-Queue verschoben" -ForegroundColor Yellow
+              $needEmbedOnly += $f
+            }
+          }
+        }
+        catch {
+          Write-Warning "[SmartSync] Re-Check fehlgeschlagen. Dateien werden zum Embed markiert."
+          $needEmbedOnly += $inProgress
+        }
+      }
+
+      # Step 4: Report
+      $smartSyncSkipped = $alreadyDone.Count
+      $smartSyncEmbedOnly = $needEmbedOnly
+      Write-Host "`n[SmartSync] Ergebnis:" -ForegroundColor Magenta
+      Write-Host "  $($alreadyDone.Count) bereits embedded (übersprungen)" -ForegroundColor Green
+      Write-Host "  $($needEmbedOnly.Count) nur Embedding nötig (bereits hochgeladen)" -ForegroundColor Yellow
+      Write-Host "  $($needUpload.Count) neu (Upload + Embed)" -ForegroundColor Cyan
+
+      # Replace filesToUpload with only the files that need uploading
+      $filesToUpload = $needUpload
+    }
+  }
+
+  # ================================================================
+  # SKIP EXISTING CHECK (based on local upload log)
   # ================================================================
   $skippedExisting = 0
-  if ($SkipExisting -and (Test-Path $logCsvPath)) {
+  if (-not $SmartSync -and $SkipExisting -and (Test-Path $logCsvPath)) {
     try {
       $previousLog = Import-Csv -Path $logCsvPath -Encoding UTF8
       $uploadedPaths = @{}
@@ -803,18 +918,30 @@ build();
   }
 
   if ($skippedExisting -gt 0) {
-    Write-Host "[Invoke-AnythingLLMUpload] Skipped (existing): $skippedExisting" -ForegroundColor DarkGray
+    Write-Host "[Invoke-AnythingLLMUpload] Skipped (log):     $skippedExisting" -ForegroundColor DarkGray
+  }
+  if ($smartSyncSkipped -gt 0) {
+    Write-Host "[Invoke-AnythingLLMUpload] Skipped (server):  $smartSyncSkipped" -ForegroundColor DarkGray
   }
 
   Write-Host "[Invoke-AnythingLLMUpload] To upload:    $($filesToUpload.Count)" -ForegroundColor Green
+  if ($smartSyncEmbedOnly.Count -gt 0) {
+    Write-Host "[Invoke-AnythingLLMUpload] Embed only:  $($smartSyncEmbedOnly.Count)" -ForegroundColor Yellow
+  }
 
-  if ($filesToUpload.Count -eq 0) {
-    Write-Host "[Invoke-AnythingLLMUpload] All files already uploaded. Nothing to do." -ForegroundColor Green
+  if ($filesToUpload.Count -eq 0 -and $smartSyncEmbedOnly.Count -eq 0) {
+    Write-Host "[Invoke-AnythingLLMUpload] Alles bereits hochgeladen und embedded. Nichts zu tun." -ForegroundColor Green
     return
   }
 
-  $totalSizeMB = [math]::Round(($filesToUpload | Measure-Object -Property SizeMB -Sum).Sum, 2)
-  Write-Host "[Invoke-AnythingLLMUpload] Total size:   $totalSizeMB MB" -ForegroundColor Cyan
+  if ($filesToUpload.Count -gt 0) {
+    $totalSizeMB = [math]::Round(($filesToUpload | Measure-Object -Property SizeMB -Sum).Sum, 2)
+    Write-Host "[Invoke-AnythingLLMUpload] Total size:   $totalSizeMB MB" -ForegroundColor Cyan
+  }
+  else {
+    $totalSizeMB = 0
+    Write-Host "[Invoke-AnythingLLMUpload] Keine neuen Dateien zum Upload." -ForegroundColor DarkGray
+  }
 
   # ================================================================
   # UPLOAD + EMBEDDING LOOP
@@ -1159,6 +1286,99 @@ build();
       }
       catch {
         Write-Warning "[Invoke-AnythingLLMUpload] Embedding request failed for final batch: $($_.Exception.Message)"
+      }
+    }
+  }
+
+  # ── SmartSync: Embed-only files (already uploaded, not yet embedded) ──
+  if (-not $UploadOnly -and $smartSyncEmbedOnly.Count -gt 0) {
+    Write-Host "`n[SmartSync] Starte Embedding für $($smartSyncEmbedOnly.Count) bereits hochgeladene Datei(en)..." -ForegroundColor Magenta
+
+    # Build document locations from folder + filename
+    $embedOnlyLocations = @()
+    foreach ($f in $smartSyncEmbedOnly) {
+      $embedOnlyLocations += "$DocumentFolder/$($f.Name)"
+    }
+
+    # Embed in batches
+    $embedOnlyBatchNum = 0
+    for ($i = 0; $i -lt $embedOnlyLocations.Count; $i += $BatchSize) {
+      $embedOnlyBatchNum++
+      $batchLocs = @($embedOnlyLocations[$i..([math]::Min($i + $BatchSize - 1, $embedOnlyLocations.Count - 1))])
+
+      Write-Host "`n  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Embedding $($batchLocs.Count) Dokumente..." -ForegroundColor Yellow
+
+      try {
+        $embedBody = @{
+          adds    = $batchLocs
+          deletes = @()
+        } | ConvertTo-Json -Depth 3
+
+        Write-Progress -Activity "AnythingLLM SmartSync Embedding" `
+          -Status "Batch ${embedOnlyBatchNum}: Sende Embed-Request ($($batchLocs.Count) Dokumente)..." `
+          -PercentComplete 0
+
+        $embedSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/workspace/$WorkspaceSlug/update-embeddings" `
+          -Method Post -Body $embedBody -ContentType 'application/json' `
+          -Headers $authHeaders -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $embedSw.Stop()
+
+        Write-Host "  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte auf Verarbeitung..." -ForegroundColor DarkGray
+
+        $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbeddingTimeoutSec)
+        $allCached = $false
+        $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $folderEncoded = [System.Uri]::EscapeDataString($DocumentFolder)
+
+        while (-not $allCached -and [DateTime]::UtcNow -lt $pollDeadline) {
+          Start-Sleep -Seconds $EmbeddingPollIntervalSec
+
+          $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
+          $remainingSec = [math]::Max(0, $EmbeddingTimeoutSec - [int]$pollSw.Elapsed.TotalSeconds)
+
+          try {
+            $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+              -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
+
+            if ($docsResponse.documents) {
+              $batchNames = $batchLocs | ForEach-Object { [System.IO.Path]::GetFileName($_) }
+              $matchingDocs = @($docsResponse.documents | Where-Object { $batchNames -contains $_.name })
+              $cachedCount = @($matchingDocs | Where-Object { $_.cached -eq $true }).Count
+              $pctEmbed = [math]::Min(100, [math]::Round(($cachedCount / [math]::Max(1, $batchLocs.Count)) * 100))
+
+              Write-Progress -Activity "AnythingLLM SmartSync Embedding" `
+                -Status "Batch ${embedOnlyBatchNum}: $cachedCount/$($batchLocs.Count) eingebettet ($pctEmbed%) | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
+                -PercentComplete $pctEmbed
+
+              if ($cachedCount -ge $batchLocs.Count) {
+                $allCached = $true
+                $embedded += $cachedCount
+                $pollSw.Stop()
+                Write-Host "  [EMBED] SmartSync-Batch ${embedOnlyBatchNum}: Alle $cachedCount Dokumente eingebettet ($($pollSw.Elapsed.ToString('mm\:ss')))." -ForegroundColor Green
+              }
+            }
+          }
+          catch {
+            Write-Warning "[SmartSync] Embedding poll error: $($_.Exception.Message)"
+          }
+        }
+
+        if (-not $allCached) {
+          $pollSw.Stop()
+          Write-Warning "[SmartSync] Embedding timeout fuer Batch ${embedOnlyBatchNum} nach ${EmbeddingTimeoutSec}s."
+        }
+
+        Write-Progress -Activity "AnythingLLM SmartSync Embedding" -Completed
+      }
+      catch {
+        Write-Warning "[SmartSync] Embedding request fehlgeschlagen fuer Batch ${embedOnlyBatchNum}: $($_.Exception.Message)"
+      }
+
+      # Batch pause
+      if ($i + $BatchSize -lt $embedOnlyLocations.Count -and $BatchPauseSec -gt 0) {
+        Write-Host "  [PAUSE] ${BatchPauseSec}s..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $BatchPauseSec
       }
     }
   }
