@@ -122,6 +122,7 @@ function Invoke-AnythingLLMUpload {
   param(
     [Parameter(Mandatory, ParameterSetName = 'Folder')]
     [Parameter(Mandatory, ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [string]$AnythingLLMUrl,
 
     [Parameter(ParameterSetName = 'Folder')]
@@ -129,63 +130,76 @@ function Invoke-AnythingLLMUpload {
     [string]$ApiKey,
 
     [Parameter(Mandatory, ParameterSetName = 'Folder')]
-    [ValidateScript({ Test-Path $_ -PathType Container })]
+    [Parameter(ParameterSetName = 'Gui')]
     [string]$InputPath,
 
     [Parameter(Mandatory, ParameterSetName = 'Folder')]
     [Parameter(Mandatory, ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [string]$WorkspaceSlug,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [string]$DocumentFolder = 'pipeline-upload',
 
     [Parameter(ParameterSetName = 'Folder')]
+    [Parameter(ParameterSetName = 'Gui')]
     [string[]]$Folders,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [string[]]$Extensions = @('.md'),
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(1, 500)]
     [int]$BatchSize = 10,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(0, 300)]
     [int]$BatchPauseSec = 5,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(30, 3600)]
     [int]$EmbeddingTimeoutSec = 300,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(3, 120)]
     [int]$EmbeddingPollIntervalSec = 10,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [bool]$SkipExisting = $true,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [switch]$Force,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [switch]$UploadOnly,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(10, 3600)]
     [int]$TimeoutSec = 120,
 
     [Parameter(ParameterSetName = 'Folder')]
     [Parameter(ParameterSetName = 'Csv')]
+    [Parameter(ParameterSetName = 'Gui')]
     [ValidateRange(0, 10)]
     [int]$RetryCount = 3,
 
@@ -208,8 +222,14 @@ function Invoke-AnythingLLMUpload {
   # GUI MODE
   # ================================================================
   if ($PSCmdlet.ParameterSetName -eq 'Gui') {
-    $guiInputHtml = if ($GuiInputPath) { $GuiInputPath } else { '' }
-    $guiInputJs = if ($GuiInputPath) { $GuiInputPath -replace '\\', '\\\\' } else { '' }
+    # Resolve pre-fill values from parameters (InputPath or legacy GuiInputPath)
+    $guiInputHtml = if ($InputPath) { $InputPath } elseif ($GuiInputPath) { $GuiInputPath } else { '' }
+    $guiInputJs = if ($guiInputHtml) { $guiInputHtml -replace '\\', '\\\\' } else { '' }
+    $guiUrlJs = if ($AnythingLLMUrl) { $AnythingLLMUrl } else { '' }
+    $guiWorkspaceJs = if ($WorkspaceSlug) { $WorkspaceSlug } else { '' }
+    $guiDocFolderJs = if ($PSBoundParameters.ContainsKey('DocumentFolder')) { $DocumentFolder } else { '' }
+    $guiFoldersJs = if ($Folders) { ($Folders -join ', ') } else { '' }
+    $guiExtJs = if ($PSBoundParameters.ContainsKey('Extensions')) { ($Extensions -join ',') } else { '' }
     $scriptDirJs = ($PSScriptRoot -replace '\\', '\\\\').Replace("'", "\\'")
     $guiHtml = @"
 <!DOCTYPE html>
@@ -523,9 +543,19 @@ function load() {
 
 // Init
 load();
-// Override input if passed via PowerShell
-var initInput = '$guiInputJs'.replace(/\\\\/g, '\\');
-if (initInput) { var e = g('allm-input'); if (e && !e.value) e.value = initInput; }
+// Override fields if passed via PowerShell parameters
+var prefills = {
+  'allm-url': '$guiUrlJs',
+  'allm-workspace': '$guiWorkspaceJs',
+  'allm-docfolder': '$guiDocFolderJs',
+  'allm-input': '$guiInputJs'.replace(/\\\\/g, '\\'),
+  'allm-folders': '$guiFoldersJs',
+  'allm-ext': '$guiExtJs'
+};
+Object.keys(prefills).forEach(function(id) {
+  var val = prefills[id];
+  if (val) { var e = g(id); if (e) e.value = val; }
+});
 build();
 </script>
 </body>
