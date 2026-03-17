@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Scans a target directory and generates an interactive HTML dashboard with statistics.
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sends files to a Docling Serve API for document conversion (PDF → Markdown, HTML, etc.).
 
