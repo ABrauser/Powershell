@@ -911,9 +911,18 @@ build();
       }
     }
     catch {
-      Write-Warning "[SmartSync] Konnte Dokumente nicht abfragen: $($_.Exception.Message)"
-      Write-Warning "[SmartSync] Fahre ohne Server-Abgleich fort (Fallback auf lokales Log)."
-      $SmartSync = $false
+      $is404 = $_.Exception.Response.StatusCode -eq 404 -or
+               $_.Exception.Message -match '404'
+      if ($is404) {
+        Write-Host "[SmartSync] Ordner '$DocumentFolder' existiert noch nicht auf dem Server (wird beim Upload erstellt)." -ForegroundColor Yellow
+        Write-Host "[SmartSync] Alle Dateien werden neu hochgeladen." -ForegroundColor Yellow
+        # SmartSync stays $true so local log is skipped
+      }
+      else {
+        Write-Warning "[SmartSync] Konnte Dokumente nicht abfragen: $($_.Exception.Message)"
+        Write-Warning "[SmartSync] Fahre ohne Server-Abgleich fort (Fallback auf lokales Log)."
+        $SmartSync = $false
+      }
     }
 
     if ($SmartSync -and $serverDocs.Count -gt 0) {
