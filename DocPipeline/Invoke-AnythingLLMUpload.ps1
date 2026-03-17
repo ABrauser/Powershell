@@ -625,9 +625,10 @@ build();
         deletes = @()
       } | ConvertTo-Json -Depth 3
 
-      Write-Host "    [$(& $ts)] Sende Embed-Request..." -ForegroundColor DarkGray
+      Write-Host "    [$(& $ts)] Sende Embed-Request fuer '$fileName' (HTTP-Timeout: $([math]::Max($Timeout * 3, 900))s)..." -ForegroundColor DarkGray
+      Write-Host "    [$(& $ts)] Warte auf Server-Antwort (kein Fortschritt bis Server antwortet)..." -ForegroundColor DarkYellow
       Write-Progress -Activity "AnythingLLM Embedding" `
-        -Status "Sende Embed: $fileName..." `
+        -Status "$fileName | Warte auf Server-Antwort..." `
         -PercentComplete 0
 
       # Embed request needs much more time than upload (large files = many chunks)
