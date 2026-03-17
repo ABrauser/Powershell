@@ -602,8 +602,8 @@ build();
     $Entry | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -Append:(-not $needsHeader)
   }
 
-  # Helper: embed a single document and poll until cached or timeout
-  # Returns $true if embedding succeeded, $false otherwise
+  # Helper: embed a single document and poll until cached
+  # Returns $true if embedding succeeded, $false if embed request failed (caller should stop)
   function Invoke-SingleEmbed {
     param(
       [string]$Location,
@@ -634,21 +634,30 @@ build();
         -Headers $Headers -TimeoutSec $Timeout -ErrorAction Stop
       $embedSw.Stop()
 
-      Write-Host "    Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Polling..." -ForegroundColor DarkGray
+      Write-Host "    Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Warte bis Server fertig..." -ForegroundColor DarkGray
 
-      # Poll until cached
-      $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbedTimeout)
+      # Poll until cached:true - no hard timeout, keep waiting
       $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
+      $warned = $false
+      $pollErrors = 0
 
-      while ([DateTime]::UtcNow -lt $pollDeadline) {
+      while ($true) {
         Start-Sleep -Seconds $PollInterval
 
         $elapsedStr = $pollSw.Elapsed.ToString('mm\:ss')
-        $remainingSec = [math]::Max(0, $EmbedTimeout - [int]$pollSw.Elapsed.TotalSeconds)
+        $elapsedSec = [int]$pollSw.Elapsed.TotalSeconds
+
+        # Show warning after EmbedTimeout but keep going
+        if (-not $warned -and $elapsedSec -gt $EmbedTimeout) {
+          Write-Host "    [WARNUNG] $fileName braucht laenger als ${EmbedTimeout}s - Server arbeitet noch, warte weiter..." -ForegroundColor Yellow
+          $warned = $true
+        }
 
         try {
           $docsResp = Invoke-RestMethod -Uri "$Url/api/v1/documents/folder/$Folder" `
             -Method Get -Headers $Headers -TimeoutSec 30 -ErrorAction Stop
+
+          $pollErrors = 0  # Reset error counter on success
 
           if ($docsResp.documents) {
             $match = $docsResp.documents | Where-Object { $_.name -eq $fileName } | Select-Object -First 1
@@ -661,18 +670,21 @@ build();
           }
 
           Write-Progress -Activity "AnythingLLM Embedding" `
-            -Status "$fileName | ${elapsedStr} vergangen | Timeout in ${remainingSec}s" `
-            -PercentComplete ([math]::Min(90, [int]($pollSw.Elapsed.TotalSeconds / $EmbedTimeout * 100)))
+            -Status "$fileName | ${elapsedStr} vergangen | Server arbeitet..." `
+            -PercentComplete ([math]::Min(95, [int]($elapsedSec / [math]::Max(1, $EmbedTimeout) * 80)))
         }
         catch {
-          Write-Warning "    Polling-Fehler: $($_.Exception.Message)"
+          $pollErrors++
+          Write-Warning "    Polling-Fehler ($pollErrors): $($_.Exception.Message)"
+          # After 5 consecutive poll errors, give up
+          if ($pollErrors -ge 5) {
+            $pollSw.Stop()
+            Write-Progress -Activity "AnythingLLM Embedding" -Completed
+            Write-Warning "    [FEHLER] $fileName - Polling nach $pollErrors Fehlern abgebrochen."
+            return $false
+          }
         }
       }
-
-      $pollSw.Stop()
-      Write-Progress -Activity "AnythingLLM Embedding" -Completed
-      Write-Warning "    [TIMEOUT] $fileName nach ${EmbedTimeout}s nicht fertig eingebettet."
-      return $false
     }
     catch {
       Write-Progress -Activity "AnythingLLM Embedding" -Completed
@@ -1062,6 +1074,7 @@ build();
   $totalUploadTime = 0
   $batchDocLocations = @()  # Collected document locations for batch embedding
   $batchCounter = 0
+  $embedFailed = $false
   $batchNum = 0
 
   $batchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1235,8 +1248,16 @@ build();
             -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
             -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
           if ($ok) { $embedded++ }
+          else {
+            Write-Host "`n  [STOP] Embedding fehlgeschlagen - stoppe um Server nicht zu ueberlasten." -ForegroundColor Red
+            Write-Host "         Bereits verarbeitete Dateien bleiben erhalten. Naechster Run mit -SmartSync setzt fort." -ForegroundColor Red
+            $embedFailed = $true
+            break
+          }
         }
       }
+
+      if ($embedFailed) { break }  # Exit upload loop
 
       # Reset batch counters
       $batchDocLocations = @()
@@ -1265,6 +1286,11 @@ build();
           -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
           -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
         if ($ok) { $embedded++ }
+        else {
+          Write-Host "`n  [STOP] Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
+          $embedFailed = $true
+          break
+        }
       }
     }
   }
@@ -1282,6 +1308,11 @@ build();
         -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
         -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
       if ($ok) { $embedded++ }
+      else {
+        Write-Host "`n  [STOP] SmartSync Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
+        $embedFailed = $true
+        break
+      }
     }
   }
 
