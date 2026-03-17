@@ -791,8 +791,7 @@ build();
     # Step 1: Get documents in the AnythingLLM folder
     $serverDocs = @{}
     try {
-      $folderEncoded = [System.Uri]::EscapeDataString($DocumentFolder)
-      $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+      $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
         -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
 
       if ($docsResponse.documents) {
@@ -844,7 +843,7 @@ build();
         Start-Sleep -Seconds 30
 
         try {
-          $docsResponse2 = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+          $docsResponse2 = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
             -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
 
           $serverDocs2 = @{}
@@ -1329,7 +1328,6 @@ build();
         $pollDeadline = [DateTime]::UtcNow.AddSeconds($EmbeddingTimeoutSec)
         $allCached = $false
         $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
-        $folderEncoded = [System.Uri]::EscapeDataString($DocumentFolder)
 
         while (-not $allCached -and [DateTime]::UtcNow -lt $pollDeadline) {
           Start-Sleep -Seconds $EmbeddingPollIntervalSec
@@ -1338,7 +1336,7 @@ build();
           $remainingSec = [math]::Max(0, $EmbeddingTimeoutSec - [int]$pollSw.Elapsed.TotalSeconds)
 
           try {
-            $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$folderEncoded" `
+            $docsResponse = Invoke-RestMethod -Uri "$AnythingLLMUrl/api/v1/documents/folder/$DocumentFolder" `
               -Method Get -Headers $authHeaders -TimeoutSec 30 -ErrorAction Stop
 
             if ($docsResponse.documents) {
