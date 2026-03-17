@@ -887,6 +887,16 @@ build();
         }
       }
       Write-Host "[SmartSync] Dokumente im Ordner '$DocumentFolder': $($serverDocs.Count)" -ForegroundColor Magenta
+
+      # Debug: Show server doc names for troubleshooting
+      if ($serverDocs.Count -gt 0) {
+        Write-Host "[SmartSync] Server-Dokumente:" -ForegroundColor DarkGray
+        foreach ($key in $serverDocs.Keys) {
+          $sd = $serverDocs[$key]
+          $status = if ($sd.Cached) { 'cached' } else { 'nicht cached' }
+          Write-Host "    $key ($status)" -ForegroundColor DarkGray
+        }
+      }
     }
     catch {
       Write-Warning "[SmartSync] Konnte Dokumente nicht abfragen: $($_.Exception.Message)"
@@ -896,13 +906,30 @@ build();
 
     if ($SmartSync -and $serverDocs.Count -gt 0) {
       # Step 2: Classify files into 3 stages
+      # Match by filename stem (without extension) because AnythingLLM may rename files
       $needUpload = @()
       $needEmbedOnly = @()
       $alreadyDone = @()
       $inProgress = @()
 
       foreach ($f in $filesToUpload) {
-        $match = $serverDocs[$f.Name]
+        $localName = $f.Name
+        $localStem = [System.IO.Path]::GetFileNameWithoutExtension($localName)
+
+        # Try exact match first, then stem-based match
+        $match = $serverDocs[$localName]
+        if (-not $match) {
+          # Search for server doc whose name starts with the local filename stem
+          foreach ($key in $serverDocs.Keys) {
+            if ($key -eq $localName -or
+                $key.StartsWith($localStem, [System.StringComparison]::OrdinalIgnoreCase)) {
+              $match = $serverDocs[$key]
+              Write-Host "    [SmartSync] Match: '$localName' -> '$key'" -ForegroundColor DarkGray
+              break
+            }
+          }
+        }
+
         if (-not $match) {
           $needUpload += $f
         }
