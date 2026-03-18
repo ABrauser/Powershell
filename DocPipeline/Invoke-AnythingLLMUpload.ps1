@@ -920,11 +920,12 @@ build();
 
       if ($docsResponse.documents) {
         foreach ($doc in $docsResponse.documents) {
-          $docName = $doc.name
-          if (-not $docName) { $docName = $doc.title }
-          if ($docName) {
-            $serverDocs[$docName] = [PSCustomObject]@{
-              Name     = $docName
+          # title = original filename, name = sanitized with UUID hash
+          $docTitle = if ($doc.title) { $doc.title } else { $doc.name }
+          if ($docTitle) {
+            $serverDocs[$docTitle] = [PSCustomObject]@{
+              Title    = $doc.title
+              Name     = $doc.name
               Cached   = [bool]$doc.cached
               Location = if ($doc.location) { $doc.location } else { '' }
             }
@@ -959,15 +960,18 @@ build();
     }
 
     if ($SmartSync -and $serverDocs.Count -gt 0) {
-      # Step 2: Classify files into 3 stages
-      # Normalize filenames like AnythingLLM does: spaces->dashes, umlauts stripped
+      # Normalize filenames aggressively: only keep letters+digits for comparison
+      # This handles ALL special char transformations AnythingLLM may do
       function Normalize-ALLMName {
         param([string]$Name)
-        $n = $Name.Replace(' ', '-')
-        $n = $n.Replace('ä', 'a').Replace('Ä', 'A')
-        $n = $n.Replace('ö', 'o').Replace('Ö', 'O')
-        $n = $n.Replace('ü', 'u').Replace('Ü', 'U')
+        # Replace umlauts with base letters first
+        $n = $Name
+        $n = $n.Replace('ä', 'ae').Replace('Ä', 'Ae')
+        $n = $n.Replace('ö', 'oe').Replace('Ö', 'Oe')
+        $n = $n.Replace('ü', 'ue').Replace('Ü', 'Ue')
         $n = $n.Replace('ß', 'ss')
+        # Strip everything except letters and digits
+        $n = [regex]::Replace($n, '[^a-zA-Z0-9]', '')
         return $n.ToLower()
       }
 
@@ -978,17 +982,18 @@ build();
 
       foreach ($f in $filesToUpload) {
         $localName = $f.Name
-        $localStem = [System.IO.Path]::GetFileNameWithoutExtension($localName)
-        $localNorm = Normalize-ALLMName $localStem
 
-        # Try exact match first, then normalized stem-based match
+        # 1. Direct match by title (original filename) - most reliable
         $match = $serverDocs[$localName]
+
+        # 2. Fallback: normalized comparison (strips all special chars)
         if (-not $match) {
+          $localNorm = Normalize-ALLMName ([System.IO.Path]::GetFileNameWithoutExtension($localName))
           foreach ($key in $serverDocs.Keys) {
-            $keyNorm = Normalize-ALLMName $key
-            if ($keyNorm -eq $localNorm -or $keyNorm.StartsWith($localNorm)) {
+            $keyNorm = Normalize-ALLMName ([System.IO.Path]::GetFileNameWithoutExtension($key))
+            if ($keyNorm -eq $localNorm) {
               $match = $serverDocs[$key]
-              Write-Host "    [SmartSync] Match: '$localName' -> '$key'" -ForegroundColor DarkGray
+              Write-Host "    [SmartSync] Match (normalisiert): '$localName' -> '$key'" -ForegroundColor DarkGray
               break
             }
           }
