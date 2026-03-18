@@ -613,8 +613,15 @@ build();
       [hashtable]$Headers,
       [int]$Timeout,
       [int]$EmbedTimeout,
-      [int]$PollInterval
+      [int]$PollInterval,
+      [string]$OverallStatus = ''   # e.g. "Gesamt: 45/173 (26%)"
     )
+    # Show overall progress bar (always visible at top level)
+    if ($OverallStatus) {
+      $pctMatch = [regex]::Match($OverallStatus, '\((\d+)%\)')
+      $pctVal = if ($pctMatch.Success) { [int]$pctMatch.Groups[1].Value } else { 0 }
+      Write-Progress -Id 0 -Activity 'AnythingLLM Gesamt' -Status $OverallStatus -PercentComplete $pctVal
+    }
 
     $fileName = [System.IO.Path]::GetFileName($Location)
     $ts = { (Get-Date).ToString('HH:mm:ss') }
@@ -650,8 +657,8 @@ build();
         Start-Sleep -Seconds 5
         $elapsedSec = [int]$embedSw.Elapsed.TotalSeconds
         $elapsedStr = $embedSw.Elapsed.ToString('mm\:ss')
-        Write-Progress -Activity "AnythingLLM Embedding" `
-          -Status "$fileName | Server arbeitet... ${elapsedStr} / ${embedRequestTimeout}s" `
+        Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" `
+          -Status "Server arbeitet... ${elapsedStr} / ${embedRequestTimeout}s" `
           -PercentComplete ([math]::Min(95, [int]($elapsedSec / $embedRequestTimeout * 100)))
       }
 
@@ -666,7 +673,7 @@ build();
       }
       $runspace.Dispose()
 
-      Write-Progress -Activity "AnythingLLM Embedding" -Completed
+      Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" -Completed
       Write-Host "    [$(& $ts)] Embed-Request akzeptiert ($([math]::Round($embedSw.Elapsed.TotalSeconds, 1))s). Polling cached-Status..." -ForegroundColor DarkGray
 
       # Poll until cached:true - no hard timeout, keep waiting
@@ -696,14 +703,14 @@ build();
             $match = $docsResp.documents | Where-Object { $_.name -eq $fileName } | Select-Object -First 1
             if ($match -and $match.cached) {
               $pollSw.Stop()
-              Write-Progress -Activity "AnythingLLM Embedding" -Completed
+              Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" -Completed
               Write-Host "    [$(& $ts)] [OK] $fileName eingebettet (Dauer: $($pollSw.Elapsed.ToString('mm\:ss')))" -ForegroundColor Green
               return $true
             }
           }
 
-          Write-Progress -Activity "AnythingLLM Embedding" `
-            -Status "$fileName | ${elapsedStr} vergangen | Server arbeitet..." `
+          Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" `
+            -Status "Polling... ${elapsedStr} vergangen" `
             -PercentComplete ([math]::Min(95, [int]($elapsedSec / [math]::Max(1, $EmbedTimeout) * 80)))
         }
         catch {
@@ -712,7 +719,7 @@ build();
           # After 5 consecutive poll errors, give up
           if ($pollErrors -ge 5) {
             $pollSw.Stop()
-            Write-Progress -Activity "AnythingLLM Embedding" -Completed
+            Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" -Completed
             Write-Warning "    [$(& $ts)] [FEHLER] $fileName - Polling nach $pollErrors Fehlern abgebrochen (Dauer: $($pollSw.Elapsed.ToString('mm\:ss')))."
             return $false
           }
@@ -720,7 +727,7 @@ build();
       }
     }
     catch {
-      Write-Progress -Activity "AnythingLLM Embedding" -Completed
+      Write-Progress -Id 1 -ParentId 0 -Activity "Embedding: $fileName" -Completed
       Write-Warning "    [$(& $ts)] [FEHLER] $fileName - $($_.Exception.Message)"
       return $false
     }
@@ -1117,6 +1124,10 @@ build();
     Write-Host "[Invoke-AnythingLLMUpload] Keine neuen Dateien zum Upload." -ForegroundColor DarkGray
   }
 
+  # Grand total for overall progress (embed-only + new files)
+  $grandTotal = $smartSyncEmbedOnly.Count + $filesToUpload.Count
+  $grandDone = 0
+
   # ── SmartSync: Embed-only files FIRST (already uploaded, not yet embedded) ──
   if (-not $UploadOnly -and $smartSyncEmbedOnly.Count -gt 0) {
     Write-Host "`n[SmartSync] Zuerst $($smartSyncEmbedOnly.Count) ausstehende Datei(en) embedden..." -ForegroundColor Magenta
@@ -1127,10 +1138,13 @@ build();
       $embedIdx++
       $loc = "$DocumentFolder/$($f.Name)"
       Write-Host "  [$embedIdx/$($smartSyncEmbedOnly.Count)] $($f.Name)" -ForegroundColor Cyan
+      $overallPct = if ($grandTotal -gt 0) { [math]::Round(($grandDone / $grandTotal) * 100) } else { 0 }
+      $overallStr = "Gesamt: $grandDone/$grandTotal ($overallPct%) | SmartSync-Embed: $($f.Name)"
       $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
         -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
-        -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
-      if ($ok) { $embedded++ }
+        -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec `
+        -OverallStatus $overallStr
+      if ($ok) { $embedded++; $grandDone++ }
       else {
         Write-Host "`n  [STOP] SmartSync Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
         Write-Host "         Naechster Run mit -SmartSync setzt fort." -ForegroundColor Red
@@ -1178,8 +1192,8 @@ build();
       $eta = " | ETA: $($etaTs.ToString('hh\:mm\:ss')) | Elapsed: $($elapsed.ToString('hh\:mm\:ss')) | Avg: $([math]::Round($avgSec,1))s/file"
     }
 
-    Write-Progress -Activity "AnythingLLM Upload" `
-      -Status "[$current/$totalFiles] $($file.Name) ($($file.SizeMB) MB)$eta" `
+    Write-Progress -Id 0 -Activity "AnythingLLM Gesamt" `
+      -Status "[$current/$totalFiles] Upload: $($file.Name) ($($file.SizeMB) MB)$eta" `
       -PercentComplete $pctComplete
 
     # ── Phase 1: Upload ──
@@ -1324,10 +1338,13 @@ build();
         foreach ($loc in $validLocations) {
           $embedIdx++
           Write-Host "  [$embedIdx/$($validLocations.Count)] $([System.IO.Path]::GetFileName($loc))" -ForegroundColor Cyan
+          $overallPct = if ($grandTotal -gt 0) { [math]::Round(($grandDone / $grandTotal) * 100) } else { 0 }
+          $overallStr = "Gesamt: $grandDone/$grandTotal ($overallPct%) | Embed: $([System.IO.Path]::GetFileName($loc))"
           $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
             -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
-            -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
-          if ($ok) { $embedded++ }
+            -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec `
+            -OverallStatus $overallStr
+          if ($ok) { $embedded++; $grandDone++ }
           else {
             Write-Host "`n  [STOP] Embedding fehlgeschlagen - stoppe um Server nicht zu ueberlasten." -ForegroundColor Red
             Write-Host "         Bereits verarbeitete Dateien bleiben erhalten. Naechster Run mit -SmartSync setzt fort." -ForegroundColor Red
@@ -1362,10 +1379,13 @@ build();
       foreach ($loc in $validLocations) {
         $embedIdx++
         Write-Host "  [$embedIdx/$($validLocations.Count)] $([System.IO.Path]::GetFileName($loc))" -ForegroundColor Cyan
+        $overallPct = if ($grandTotal -gt 0) { [math]::Round(($grandDone / $grandTotal) * 100) } else { 0 }
+        $overallStr = "Gesamt: $grandDone/$grandTotal ($overallPct%) | Embed: $([System.IO.Path]::GetFileName($loc))"
         $ok = Invoke-SingleEmbed -Location $loc -Url $AnythingLLMUrl -Slug $WorkspaceSlug `
           -Folder $DocumentFolder -Headers $authHeaders -Timeout $TimeoutSec `
-          -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec
-        if ($ok) { $embedded++ }
+          -EmbedTimeout $EmbeddingTimeoutSec -PollInterval $EmbeddingPollIntervalSec `
+          -OverallStatus $overallStr
+        if ($ok) { $embedded++; $grandDone++ }
         else {
           Write-Host "`n  [STOP] Embedding fehlgeschlagen - stoppe." -ForegroundColor Red
           $embedFailed = $true
@@ -1377,7 +1397,8 @@ build();
 
 
 
-  Write-Progress -Activity "AnythingLLM Upload" -Completed
+  Write-Progress -Id 1 -Activity "Embedding" -Completed
+  Write-Progress -Id 0 -Activity "AnythingLLM Gesamt" -Completed
   $batchStopwatch.Stop()
 
   # ================================================================
