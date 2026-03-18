@@ -3069,7 +3069,7 @@ function gfBuildTree() {
   var container = document.getElementById('gf-folder-tree');
   if (!container) return;
   container.innerHTML = '';
-  container.appendChild(gfCreateNode(scanRoot, true));
+  container.appendChild(gfCreateNode(scanRoot.toLowerCase(), true));
   gfSelectAll();
 }
 
@@ -3344,12 +3344,12 @@ var dlSelectedFolders = new Set();
 var dlAvgPerFile = $doclingAvgPerFile;
 
 function dlBuildTree() {
-  var root = scanRoot;
+  var root = scanRoot.toLowerCase();
   var folders = {};
-  folders[root] = { path: root, name: root.split('\\').pop() || root, children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0, veredeltCount: 0, totalVeredelt: 0 };
+  folders[root] = { path: root, name: scanRoot.split('\\').pop() || scanRoot, children: {}, fileCount: 0, totalFiles: 0, sizeBytes: 0, totalSize: 0, convCount: 0, totalConv: 0, veredeltCount: 0, totalVeredelt: 0 };
 
   allFiles.forEach(function(f) {
-    var dir = f.dir ? f.dir.replace(/\\\\/g, '\\') : root;
+    var dir = (f.dir ? f.dir.replace(/\\\\/g, '\\') : scanRoot).toLowerCase();
     if (!folders[dir]) {
       var rel = dir.substring(root.length).replace(/^\\/, '');
       var parts = rel.split('\\');
@@ -3391,7 +3391,7 @@ function dlRenderTree() {
   var container = document.getElementById('dl-folder-tree');
   if (!container || !dlTreeData) return;
   container.innerHTML = '';
-  container.appendChild(dlCreateNode(scanRoot, true));
+  container.appendChild(dlCreateNode(scanRoot.toLowerCase(), true));
 }
 
 function dlCreateNode(path, isRoot) {
@@ -3615,7 +3615,8 @@ function dlFilterTree(query) {
 
 function dlUpdateSummary() {
   var totalFiles = 0, totalSize = 0, folderCount = 0;
-  var allTotal = dlTreeData && dlTreeData[scanRoot] ? dlTreeData[scanRoot].totalFiles : (allFiles ? allFiles.length : 0);
+  var srLC = scanRoot.toLowerCase();
+  var allTotal = dlTreeData && dlTreeData[srLC] ? dlTreeData[srLC].totalFiles : (allFiles ? allFiles.length : 0);
 
   dlSelectedFolders.forEach(function(p) {
     var node = dlTreeData[p];
