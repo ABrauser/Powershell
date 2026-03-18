@@ -355,13 +355,14 @@ tr.warn { background: rgba(255,183,77,0.05); }
 .cnt { color: var(--text-muted); font-size: 0.82rem; margin-bottom: 6px; }
 
 /* Tree View */
-.tree { font-size: 0.85rem; }
-.tree-folder {
+.tree {
+  font-size: 0.85rem;
   background: var(--bg-secondary); border: 1px solid var(--border-glass);
-  border-radius: 12px; margin-bottom: 8px; overflow: hidden;
-  transition: border-color 0.2s;
+  border-radius: 12px; overflow: hidden;
 }
-.tree-folder:hover { border-color: rgba(168,199,250,0.15); }
+.tree:empty { display: none; }
+.tree-folder { border-bottom: 1px solid var(--border-glass); }
+.tree-folder:last-child { border-bottom: none; }
 .tree-head {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   cursor: pointer; user-select: none;
@@ -375,11 +376,11 @@ tr.warn { background: rgba(255,183,77,0.05); }
 .tree-stats .ts-ok { background: rgba(109,213,140,0.1); color: var(--success); }
 .tree-stats .ts-warn { background: rgba(255,183,77,0.1); color: var(--warning); }
 .tree-stats .ts-miss { background: rgba(226,92,92,0.1); color: var(--danger); }
-.tree-files { display: none; padding: 0 14px 10px; }
+.tree-files { display: none; padding: 2px 14px 10px 36px; }
 .tree-folder.open .tree-files { display: block; }
 .tree-file {
-  display: flex; align-items: center; gap: 8px; padding: 4px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.02); font-size: 0.82rem;
+  display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 0.82rem;
 }
 .tree-file:last-child { border-bottom: none; }
 .tree-icon { width: 18px; text-align: center; font-size: 0.9rem; }
