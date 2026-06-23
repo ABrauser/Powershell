@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Uploads processed files to AnythingLLM via API and embeds them into a workspace.
 
@@ -627,8 +627,14 @@ build();
     $ts = { (Get-Date).ToString('HH:mm:ss') }
 
     try {
+      # Ensure location is prefixed with 'custom-documents/' if not already present
+      $embedPath = $Location
+      if ($embedPath -notlike "custom-documents/*") {
+        $embedPath = "custom-documents/$embedPath"
+      }
+
       $embedBody = @{
-        adds    = @($Location)
+        adds    = @($embedPath)
         deletes = @()
       } | ConvertTo-Json -Depth 3
 
